@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2025 Avinash H. Duduskar
+#
 # Generates example nftables fragments and setup commands for pam_authnft.
 # Usage: examples_generator.sh [-s|-f|-m|-h]
 
@@ -37,9 +40,8 @@ show_setup() {
 
 show_firewall() {
     echo "### EXAMPLE FRAGMENTS ###"
-    echo "Fragments are included inside the 'inet authnft' table scope."
-    echo "The sets session_map_ipv4 and session_map_ipv6 are keyed by"
-    echo "cgroupv2 inode . source IP and populated at session open."
+    echo "Fragments are included at top level as nftables commands."
+    echo "The file must be root-owned and not world-writable."
     echo ""
 
     echo "$HR"

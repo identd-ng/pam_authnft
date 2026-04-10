@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025 Avinash H. Duduskar
+
 #ifndef AUTHNFT_H
 #define AUTHNFT_H
 
@@ -23,41 +26,47 @@
 #define UNIT_BUF_SIZE 128
 #define MAX_USER_LEN 32
 
-/**
+/*
  * nft_handler_setup:
- * Checks 'authnft' group membership, enforces existence of user fragment,
- * and configures the nftables ruleset.
+ * Checks 'authnft' group membership, validates the user's root-owned fragment,
+ * and inserts the { cgroup_id . src_ip } element into the appropriate set.
  */
 int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                       const char *remote_ip);
 
-/**
+/*
  * nft_handler_cleanup:
- * Surgical removal of the specific cgroup . IP element from the set.
+ * Atomically removes the { cgroup_id . src_ip } element inserted at open_session.
+ * cg_id is passed directly from PAM data to avoid re-resolution after scope teardown.
  */
-int nft_handler_cleanup(pam_handle_t *pamh, const char *user, int session_pid, const char *remote_ip);
+int nft_handler_cleanup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
+                        const char *remote_ip);
 
-/**
+/*
  * bus_handler_start:
- * Connects to systemd via D-Bus and creates the transient .scope unit.
+ * Connects to systemd via D-Bus and creates a transient .scope unit under
+ * authnft.slice, placing the session process into a named cgroup.
  */
 int bus_handler_start(pam_handle_t *pamh, const char *user, int session_pid);
 
-/**
+/*
  * sandbox_apply:
- * Applies the Seccomp-BPF sandbox to the current process.
+ * Installs a seccomp-BPF allowlist with SCMP_ACT_KILL default and sets
+ * PR_SET_NO_NEW_PRIVS before loading the filter.
  */
 int sandbox_apply(pam_handle_t *pamh);
 
-/**
+/*
  * util_is_valid_username:
  * Validates the username for length and illegal characters.
+ * Rejects path traversal sequences, shell metacharacters, and leading hyphens.
  */
 int util_is_valid_username(const char *user);
 
-/**
+/*
  * util_get_cgroup_id:
- * Resolves the 64-bit cgroupv2 ID (inode) for a given process ID.
+ * Resolves the 64-bit cgroupv2 inode for a given PID via sd_pid_get_cgroup(3)
+ * and stat(2) on /sys/fs/cgroup/<path>.
  */
 int util_get_cgroup_id(pid_t pid, uint64_t *cg_id);
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025 Avinash H. Duduskar
+
 #include "authnft.h"
 #include <seccomp.h>
 #include <sys/prctl.h>
@@ -13,7 +16,7 @@
  *
  * This list was derived empirically: strace was run across a complete
  * pamtester open_session + close_session cycle and only syscalls observed
- * after sandbox_apply() returns are included. execve() appears in the
+ * after sandbox_apply() returns are included. execve(2) appears in the
  * trace but originates from pamtester's own startup before dlopen() loads
  * this module — it is intentionally excluded.
  */

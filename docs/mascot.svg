@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="620" viewBox="0 0 680 620" role="img" aria-labelledby="title desc">
+  <title id="title">pam_authnft mascot</title>
+  <desc id="desc">A penguin security guard holding an nft shield and a session key, with a session badge clipped to its chest.</desc>
+
+  <!-- ground shadow -->
+  <ellipse cx="340" cy="555" rx="180" ry="14" fill="#000000" opacity="0.10"/>
+
+  <!-- feet -->
+  <ellipse cx="285" cy="540" rx="42" ry="14" fill="#f5a623"/>
+  <ellipse cx="395" cy="540" rx="42" ry="14" fill="#f5a623"/>
+  <ellipse cx="285" cy="535" rx="42" ry="12" fill="#ffb945"/>
+  <ellipse cx="395" cy="535" rx="42" ry="12" fill="#ffb945"/>
+
+  <!-- body -->
+  <ellipse cx="340" cy="340" rx="158" ry="198" fill="#1a1f2b"/>
+  <ellipse cx="285" cy="280" rx="40" ry="70" fill="#2a3142" opacity="0.6"/>
+
+  <!-- belly -->
+  <ellipse cx="340" cy="370" rx="108" ry="158" fill="#f7f4ec"/>
+
+  <!-- head -->
+  <ellipse cx="340" cy="195" rx="118" ry="115" fill="#1a1f2b"/>
+  <ellipse cx="340" cy="215" rx="88" ry="78" fill="#f7f4ec"/>
+
+  <!-- eyes -->
+  <circle cx="305" cy="200" r="14" fill="#1a1f2b"/>
+  <circle cx="375" cy="200" r="14" fill="#1a1f2b"/>
+  <circle cx="309" cy="196" r="4" fill="#ffffff"/>
+  <circle cx="379" cy="196" r="4" fill="#ffffff"/>
+
+  <!-- beak -->
+  <path d="M315 232 Q340 222 365 232 Q355 252 340 254 Q325 252 315 232 Z" fill="#f5a623"/>
+  <path d="M315 232 Q340 240 365 232" fill="none" stroke="#c47b00" stroke-width="1.2"/>
+
+  <!-- smile -->
+  <path d="M325 256 Q340 263 355 256" fill="none" stroke="#1a1f2b" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- cap -->
+  <ellipse cx="340" cy="118" rx="100" ry="14" fill="#2b6cb0"/>
+  <path d="M242 118 Q244 70 340 60 Q436 70 438 118 Z" fill="#3b82c4"/>
+  <rect x="280" y="108" width="120" height="14" fill="#1a1f2b"/>
+  <circle cx="340" cy="88" r="13" fill="#ffd24d" stroke="#c98a00" stroke-width="1.5"/>
+  <path d="M340 80 L342 86 L348 86 L343 90 L345 96 L340 92 L335 96 L337 90 L332 86 L338 86 Z" fill="#1a1f2b"/>
+  <path d="M250 118 Q340 145 430 118 Q430 130 340 138 Q250 130 250 118 Z" fill="#1a1f2b"/>
+
+  <!-- left wing -->
+  <path d="M195 290 Q160 360 200 440 Q230 470 260 450 Q240 380 250 320 Q240 285 195 290 Z" fill="#1a1f2b"/>
+
+  <!-- shield -->
+  <path d="M120 320 Q120 305 138 302 L208 290 Q226 287 226 305 L226 410 Q226 440 173 470 Q120 440 120 410 Z" fill="#3b82c4" stroke="#1f4d7a" stroke-width="2.5"/>
+  <path d="M138 318 L208 306 L208 405 Q208 428 173 450 Q138 428 138 405 Z" fill="#5fa3df"/>
+  <text x="173" y="372" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="500" fill="#0f2a44">nft</text>
+  <text x="173" y="395" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" fill="#0f2a44" opacity="0.75">inet authnft</text>
+
+  <!-- right wing -->
+  <path d="M485 290 Q520 360 480 440 Q450 470 420 450 Q440 380 430 320 Q440 285 485 290 Z" fill="#1a1f2b"/>
+
+  <!-- key -->
+  <g transform="translate(470 310) rotate(18)">
+    <circle cx="0" cy="0" r="26" fill="none" stroke="#ffd24d" stroke-width="9"/>
+    <circle cx="0" cy="0" r="9" fill="none" stroke="#ffd24d" stroke-width="5"/>
+    <rect x="22" y="-5" width="78" height="10" fill="#ffd24d"/>
+    <rect x="78" y="5" width="10" height="14" fill="#ffd24d"/>
+    <rect x="92" y="5" width="8" height="10" fill="#ffd24d"/>
+  </g>
+
+  <!-- session badge -->
+  <g transform="translate(295 340)">
+    <rect x="0" y="0" width="120" height="78" rx="6" fill="#ffffff" stroke="#1a1f2b" stroke-width="2"/>
+    <rect x="0" y="0" width="120" height="18" rx="6" fill="#2b6cb0"/>
+    <rect x="0" y="12" width="120" height="6" fill="#2b6cb0"/>
+    <text x="60" y="14" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="9" font-weight="500" fill="#ffffff">SESSION</text>
+    <text x="8" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#1a1f2b">user: alice</text>
+    <text x="8" y="46" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#1a1f2b">cgroup: 4823</text>
+    <text x="8" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="9" fill="#1a1f2b">scope: ssh-1</text>
+    <circle cx="103" cy="50" r="9" fill="#5fa3df"/>
+    <path d="M99 50 l3 3 l6 -7" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="52" y="-6" width="16" height="8" rx="2" fill="#888888"/>
+  </g>
+
+  <!-- name plate -->
+  <rect x="180" y="575" width="320" height="36" rx="8" fill="#1a1f2b"/>
+  <text x="340" y="599" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="500" fill="#ffd24d">pam_authnft</text>
+</svg>

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025 Avinash H. Duduskar
+
 #include "authnft.h"
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -86,11 +89,23 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
         return PAM_SESSION_ERR;
     }
 
-    /* Store session_pid for use by close_session */
-    int *stored_pid = malloc(sizeof(int));
-    if (stored_pid) {
-        *stored_pid = session_pid;
-        pam_set_data(pamh, "authnft_session_pid", stored_pid, free_pam_data);
+    /*
+     * Persist the cgroup ID for close_session. The transient .scope created by
+     * bus_handler_start may already be gone by the time close_session runs, so
+     * re-resolving the cgroup from the PID is unreliable. Storing cg_id here
+     * guarantees that nft_handler_cleanup can delete the exact set element that
+     * was inserted, preventing a leak of the { cg_id . src_ip } entry.
+     */
+    uint64_t *stored_cg = malloc(sizeof(uint64_t));
+    if (!stored_cg) {
+        pam_syslog(pamh, LOG_ERR, "authnft: out of memory storing cgroup ID");
+        return PAM_SESSION_ERR;
+    }
+    *stored_cg = cg_id;
+    if (pam_set_data(pamh, "authnft_cg_id", stored_cg, free_pam_data) != PAM_SUCCESS) {
+        pam_syslog(pamh, LOG_ERR, "authnft: failed to store cgroup ID in PAM data");
+        free(stored_cg);
+        return PAM_SESSION_ERR;
     }
 
     return nft_handler_setup(pamh, user, cg_id, rhost);
@@ -108,17 +123,21 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
     if (strcmp(user, "root") == 0)
         return PAM_SUCCESS;
 
-    /* Retrieve the pid recorded at open_session; fall back to getpid() */
-    int cleanup_pid = getpid();
-    const int *stored_pid = NULL;
-    if (pam_get_data(pamh, "authnft_session_pid",
-                     (const void **)&stored_pid) == PAM_SUCCESS && stored_pid)
-        cleanup_pid = *stored_pid;
+    /* Retrieve the cgroup ID recorded at open_session. */
+    const uint64_t *stored_cg = NULL;
+    if (pam_get_data(pamh, "authnft_cg_id",
+                     (const void **)&stored_cg) != PAM_SUCCESS || !stored_cg) {
+        pam_syslog(pamh, LOG_WARNING,
+                   "authnft: no stored cgroup ID for %s — element may persist", user);
+        return PAM_SUCCESS;
+    }
+    uint64_t cg_id = *stored_cg;
 
-    DEBUG_PRINT("PAM: close_session for user=%s pid=%d", user, cleanup_pid);
+    DEBUG_PRINT("PAM: close_session for user=%s cg_id=%llu",
+                user, (unsigned long long)cg_id);
 
     if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) == PAM_SUCCESS && rhost) {
-        if (nft_handler_cleanup(pamh, user, cleanup_pid, rhost) != PAM_SUCCESS)
+        if (nft_handler_cleanup(pamh, user, cg_id, rhost) != PAM_SUCCESS)
             pam_syslog(pamh, LOG_WARNING,
                        "authnft: cleanup failed for %s — element may persist", user);
     }

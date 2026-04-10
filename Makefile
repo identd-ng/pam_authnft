@@ -1,8 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2025 Avinash H. Duduskar
+
 .POSIX:
 
-CC        = gcc
+CC         = gcc
 PKG_CONFIG = pkg-config
-PAM_DIR   = /usr/lib/security
+PAM_DIR    = /usr/lib/security
+TEST_USER  ?= authnft-test
+CFLAGS     =
 
 LIBS      = libnftables libseccomp libsystemd pam libcap
 
@@ -15,7 +20,7 @@ HARDENING = -fstack-clash-protection \
             -fno-strict-overflow \
             -Wtrampolines
 
-CFLAGS_BASE  = -fPIC -Wall -Wextra -Iinclude -D_GNU_SOURCE $(HARDENING)
+CFLAGS_BASE  = -fPIC -Wall -Wextra -O2 -Iinclude -D_GNU_SOURCE $(HARDENING)
 LDFLAGS_BASE = -Wl,-z,relro,-z,now
 SO_LDFLAGS   = $(LDFLAGS_BASE) -shared -Wl,--version-script=pam_authnft.map
 
@@ -62,17 +67,19 @@ test-integration: $(TEST_BIN)
 install: $(TARGET)
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
+	sudo install -m 644 data/authnft.slice /etc/systemd/system/authnft.slice
+	sudo systemctl daemon-reload
 
 uninstall:
 	sudo rm -f $(PAM_DIR)/$(TARGET)
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN)
+	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
 	    sudo nft delete table inet authnft; \
 	fi
-	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/strykar-test
+	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
 .PHONY: all debug clean test test-integration distclean install uninstall

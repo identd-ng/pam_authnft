@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2025 Avinash H. Duduskar
+
 #include "authnft.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -133,7 +136,10 @@ static void run_path_resolution_test(void) {
         return;
     }
 
-    const char *test_user = "strykar-test";
+    const char *test_user = getenv("AUTHNFT_TEST_USER");
+    if (!test_user || *test_user == '\0')
+        test_user = "authnft-test";
+
     char mock_path[256];
     snprintf(mock_path, sizeof(mock_path), "%s/%s", RULES_DIR, test_user);
 
