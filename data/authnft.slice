@@ -1,0 +1,53 @@
+# /etc/systemd/system/authnft.slice
+# Parent slice for all pam_authnft session scopes.
+# Install: sudo install -m 644 authnft.slice /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#
+# Each session runs in authnft-<user>-<pid>.scope under this slice.
+# Controls here apply to all sessions combined; per-session controls
+# can be passed as properties to the StartTransientUnit D-Bus call.
+# See: man systemd.resource-control(5)
+
+[Unit]
+Description=AuthNFT Network Session Slice
+Documentation=man:systemd.resource-control(5)
+
+[Slice]
+# --- CPU ---
+#CPUAccounting=yes
+#CPUQuota=40%             # hard cap across all sessions combined
+#CPUWeight=50             # relative weight vs other slices (default 100)
+
+# --- MEMORY ---
+#MemoryAccounting=yes
+#MemoryHigh=768M          # reclaim pressure begins here
+#MemoryMax=1G             # hard limit; processes are OOM-killed above this
+#MemorySwapMax=0          # disable swap for session processes
+#OOMPolicy=kill           # kill the session's own processes, not a random victim
+#ManagedOOMMemoryPressure=kill
+#ManagedOOMMemoryPressureLimit=80%
+
+# --- PROCESSES ---
+#TasksMax=2048            # thread/process count across the slice
+
+# --- I/O ---
+#IOAccounting=yes
+#IOWeight=50              # relative I/O priority (default 100)
+#IOReadBandwidthMax=/dev/sda 50M
+#IOWriteBandwidthMax=/dev/sda 20M
+
+# --- NETWORK (enforced via cgroup BPF, independent of nftables) ---
+#IPAccounting=yes
+#IPAddressDeny=any        # block all outbound connections by default
+#IPAddressAllow=10.0.0.0/8
+#IPAddressAllow=192.168.0.0/16
+#SocketBindDeny=ipv4:tcp:1-1023   # prevent binding privileged ports
+#SocketBindDeny=ipv6:tcp:1-1023
+
+# --- SECURITY ---
+#NoNewPrivileges=yes
+#CapabilityBoundingSet=   # drop all capabilities
+#SystemCallFilter=@system-service
+#SystemCallErrorNumber=EPERM
+#RestrictNamespaces=yes
+#RestrictSUIDSGID=yes

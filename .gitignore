@@ -1,0 +1,9 @@
+obj/
+pam_authnft.so
+authnft_test
+authnft_test.d
+rules.tmp
+trace.log
+
+# Editor and IDE files
+.vscode/
