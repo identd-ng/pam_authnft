@@ -34,7 +34,11 @@ if ! getent group authnft > /dev/null 2>&1; then
     groupadd authnft; GROUP_CREATED=1
 fi
 if ! getent passwd "$TEST_USER" > /dev/null 2>&1; then
-    useradd -r -s /usr/sbin/nologin -G authnft "$TEST_USER"; USER_CREATED=1
+    if   [[ -x /usr/sbin/nologin ]]; then NOLOGIN_SHELL=/usr/sbin/nologin
+    elif [[ -x /sbin/nologin     ]]; then NOLOGIN_SHELL=/sbin/nologin
+    else                                   NOLOGIN_SHELL=/bin/false
+    fi
+    useradd -r -s "$NOLOGIN_SHELL" -G authnft "$TEST_USER"; USER_CREATED=1
 fi
 
 mkdir -p "$RULES_DIR"
@@ -52,7 +56,9 @@ EOF
 
 # Trace a single open+close cycle. The module's seccomp is bypassed so the
 # strace captures the full syscall set the module WOULD need to allow.
-# Filter /dev/null because pamtester's own stderr is not relevant.
+# pamtester's own stdout chatter ("sucessfully opened a session", etc.) is
+# not relevant to the syscall audit; drop it. strace writes the summary to
+# trace.log via -o, so stderr does not need redirecting.
 AUTHNFT_NO_SANDBOX=1 strace -f -c -o trace.log \
     pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
     open_session close_session > /dev/null
@@ -63,4 +69,4 @@ cat trace.log
 echo ""
 echo "Compare against SCMP_SYS(...) entries in src/sandbox.c."
 echo "Syscalls that legitimately run before dlopen (e.g. execve) belong"
-echo "excluded per src/sandbox.c:11-22."
+echo "excluded per the explanatory comment at the top of src/sandbox.c."

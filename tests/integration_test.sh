@@ -11,6 +11,16 @@ TEST_USER="${AUTHNFT_TEST_USER:-authnft-test}"
 RULES_DIR="/etc/authnft/users"
 PAM_TEST_CONF="/etc/pam.d/authnft_test"
 RED='\033[1;31m' BLUE='\033[1;34m' YELLOW='\033[1;33m' CYAN='\033[36m' RESET='\033[0m'
+
+# nologin location differs across distros: /usr/sbin on Arch/Debian, /sbin on
+# RHEL family. Fall back to /bin/false if neither exists.
+if [[ -x /usr/sbin/nologin ]]; then
+    NOLOGIN_SHELL="/usr/sbin/nologin"
+elif [[ -x /sbin/nologin ]]; then
+    NOLOGIN_SHELL="/sbin/nologin"
+else
+    NOLOGIN_SHELL="/bin/false"
+fi
 pass() { printf "${BLUE}[PASS]${RESET} %s\n" "$1"; }
 fail() { printf "${RED}[FAIL]${RESET} %s\n" "$1"; exit 1; }
 
@@ -43,7 +53,7 @@ if ! getent group authnft > /dev/null 2>&1; then
 fi
 
 if ! getent passwd "$TEST_USER" > /dev/null 2>&1; then
-    useradd -r -s /usr/sbin/nologin -G authnft "$TEST_USER"
+    useradd -r -s "$NOLOGIN_SHELL" -G authnft "$TEST_USER"
     USER_CREATED=1
 else
     usermod -aG authnft "$TEST_USER"
@@ -127,7 +137,7 @@ if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
         open_session close_session > /dev/null 2>&1; then
     fail "open+close in a single PAM handle failed"
 fi
-if nft list set inet authnft session_map_ipv4 2>/dev/null | grep -q 'elements'; then
+if nft list set inet authnft session_map_ipv4 2>/dev/null | grep -q 'elements = {'; then
     fail "Element persisted after close_session — cg_id persistence path broken"
 fi
 pass "Element deleted at close_session"
