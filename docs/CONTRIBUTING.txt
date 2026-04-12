@@ -1,0 +1,184 @@
+Contributing to pam_authnft
+===========================
+
+pam_authnft is a PAM session module that binds nftables rules to a user
+session via its cgroupv2 inode. It runs inside the PAM process, under a
+seccomp-BPF allowlist, and talks to systemd over D-Bus and to the kernel
+via libnftables. Changes to any of those three surfaces have narrow
+tolerances — read this file before opening a pull request.
+
+
+Build
+-----
+
+    make               # release
+    make debug         # -DDEBUG -g, stderr tracing
+    make test          # unit tests, no root
+    sudo make test-integration
+                       # pamtester + valgrind, requires root
+
+pkg-config probes five libraries: libnftables, libseccomp, libsystemd,
+pam, libcap. The hardening flag set in the Makefile is load-bearing —
+stage 6 of the test suite greps `checksec` output for Full RELRO.
+
+Debug bypass (env or PAM arg) disables seccomp only:
+
+    AUTHNFT_NO_SANDBOX=1
+
+
+Layout
+------
+
+    src/pam_entry.c    PAM entry points; lifecycle ordering
+    src/sandbox.c      seccomp-BPF allowlist
+    src/bus_handler.c  sd-bus StartTransientUnit + cgroup inode resolution
+    src/nft_handler.c  fragment validation, nft transaction, cleanup
+    include/authnft.h  public contract, constants
+    tests/             unit + pamtester integration harness
+    data/authnft.slice parent slice unit
+    examples/          fragment generator
+    pam_authnft.map    exported symbol whitelist (exactly two entries)
+
+
+Invariants to preserve
+----------------------
+
+1. Exported symbols are `pam_sm_open_session` and `pam_sm_close_session`
+   only. Adding a new PAM hook requires editing `pam_authnft.map`.
+
+2. Lifecycle order in `pam_sm_open_session` is fixed: validate user →
+   root bypass → parse `PAM_RHOST` → `sandbox_apply` → `bus_handler_start`
+   → `util_get_cgroup_id` → `pam_set_data` → `nft_handler_setup`.
+
+3. `cg_id` is persisted via `pam_set_data` keyed `"authnft_cg_id"` so
+   `close_session` can delete the exact element it inserted. Do not
+   re-resolve the cgroup from the PID at close — the transient scope
+   may already be gone.
+
+4. Error asymmetry is intentional: open_session is strict, close_session
+   is best-effort. Cleanup failures log a warning and return
+   PAM_SUCCESS so a session can always unwind.
+
+5. Fragment validation is strict: `stat()` must succeed, `st_uid == 0`,
+   world-writable bit must be clear. Failure is a user-visible
+   PAM_AUTH_ERR via `pam_error()`. This is the trust boundary — treat
+   changes as security changes.
+
+6. The nft transaction is two libnftables calls:
+       (a) add table/sets/chain/element
+       (b) include "<fragment>"
+   libnftables does not support `include` inside declarative blocks.
+   The element is inserted before the fragment so fragment rules can
+   reference `@session_map_ipv{4,6}`.
+
+7. Set type is `typeof meta cgroup . ip saddr` (v4) or `ip6 saddr` (v6),
+   with `flags timeout`. The 24-hour element timeout is a safety net,
+   not a primary cleanup mechanism.
+
+8. Chain priority is `filter - 1` so pam_authnft runs before the default
+   filter chain.
+
+
+Seccomp allowlist
+-----------------
+
+The allowlist in `src/sandbox.c` is derived empirically. The procedure:
+
+    1. Build with `make debug`.
+    2. Run `strace -f` across a complete `open_session` + `close_session`
+       cycle under pamtester.
+    3. Include only syscalls observed after `sandbox_apply()` returns.
+
+`execve(2)` appears in the trace but comes from pamtester startup before
+`dlopen()` loads the module — it is deliberately excluded. If you add
+code that reaches a new syscall from any of the three handlers, you must
+add the syscall here or the module is killed with SIGSYS at runtime.
+Default action is `SCMP_ACT_KILL`. `PR_SET_NO_NEW_PRIVS` is set before
+`seccomp_load` — do not reorder.
+
+
+Style
+-----
+
+- 4-space indent, no tabs. `.editorconfig` enforces this.
+- C99. `_GNU_SOURCE` is defined via CFLAGS.
+- Keep functions that cross the sandbox boundary small and auditable.
+- Use `pam_syslog` for log output that the admin should see; use
+  `DEBUG_PRINT` for developer traces (compiled out in release).
+- Prefer `snprintf` with explicit bounds over string concatenation.
+  Overflow returns `PAM_BUF_ERR`.
+- Do not call `getgrnam`/`getpwnam` from any new signal handler — they
+  are non-reentrant. Current usage is safe because the sandbox is
+  active and no handlers are registered.
+- New files get an SPDX `GPL-2.0-or-later` line and the copyright
+  holder "Avinash H. Duduskar".
+
+
+Tests
+-----
+
+- `make test` runs the symbol-whitelist check (stage 0) followed by the
+  seven-stage unit suite in `tests/test_suite.c`. Stages 4 and 7 skip
+  gracefully without `CAP_NET_ADMIN`; stage 2 skips under
+  `AUTHNFT_AUDIT_MODE=1` because of a seccomp/valgrind conflict.
+- `make test-integration` runs `tests/integration_test.sh` under root,
+  then re-runs the unit suite under valgrind. The integration harness
+  creates and removes its own `authnft-test` user and `authnft` group;
+  override with `AUTHNFT_TEST_USER`.
+- Run `sudo make distclean` to tear down a leftover `inet authnft`
+  table and the throwaway `/etc/pam.d/authnft_test` config.
+- New behaviour does not require new tests — add one only if the
+  behaviour is representative of a class of regression you would
+  actually want caught.
+
+
+Invariant guards
+----------------
+
+Each of the seven "do not change lightly" invariants has at least one
+automated guard. Regressions trip a known test, not a production
+incident.
+
+  #1 cg_id persistence     integration 10.6: open+close in a single
+                           PAM handle must result in an empty set
+  #2 two-call nft split    enforced by the comment and code structure;
+                           no automated guard (libnftables semantics
+                           are version-dependent)
+  #3 element-before-frag   covered by integration 10.2 succeeding with
+                           a fragment that references @session_map_ipv4
+  #4 fragment perms        integration 10.4 (uid != 0) + 10.5
+                           (world-writable) must both be rejected
+  #5 seccomp provenance    `make trace` produces a syscall summary;
+                           diff against src/sandbox.c before adding
+  #6 open/close asymmetry  integration 10.7: close without prior open
+                           must return PAM_SUCCESS
+  #7 exported symbols      `make test-symbols` (also wired into
+                           `make test`) asserts exactly
+                           pam_sm_open_session + pam_sm_close_session
+
+If you touch an invariant, run the guarding test locally and mention
+it in the pull-request template checkbox.
+
+
+Regenerating the seccomp allowlist
+----------------------------------
+
+    make trace
+
+Runs the integration harness with the sandbox bypassed under
+`strace -f -c`, writing a syscall-usage summary to `trace.log`. Compare
+against the allowlist categories in `src/sandbox.c` and add any newly
+observed syscalls with a one-line justification comment. Do not add
+syscalls without strace evidence.
+
+
+Submitting changes
+------------------
+
+- Keep pull requests focused. Unrelated cleanups belong in separate PRs.
+- Mention which invariant from the list above your change touches, if
+  any, and why the change is safe.
+- Run `make clean && make && make test` before submitting.
+- If your change reaches a new syscall, include the strace excerpt that
+  justifies the allowlist addition.
+- Signed-off-by is not required, but clear commit messages are.

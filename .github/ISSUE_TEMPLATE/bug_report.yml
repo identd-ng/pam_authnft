@@ -1,0 +1,70 @@
+name: Bug report
+description: Something is broken in pam_authnft
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        pam_authnft runs inside the PAM process of services like sshd.
+        Please include enough detail to reproduce without a live system.
+        For security-sensitive issues, use GitHub Security Advisories
+        instead of this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Actual behaviour and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Minimal steps. Include the PAM stack (`/etc/pam.d/<service>`),
+        the `authnft` group membership of the test user, and the
+        fragment content if relevant.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        `journalctl -t authnft` output and `nft list table inet authnft`
+        before and after the failing operation.
+      render: shell
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel version
+      placeholder: "uname -r"
+    validations:
+      required: true
+  - type: input
+    id: nft
+    attributes:
+      label: nftables version
+      placeholder: "nft --version"
+    validations:
+      required: true
+  - type: input
+    id: systemd
+    attributes:
+      label: systemd version
+      placeholder: "systemctl --version | head -1"
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution
+      placeholder: "e.g. Arch Linux, Debian 12"
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I am using cgroupv2 unified hierarchy (not hybrid)
+          required: true
+        - label: I have read the Limitations section of the README
+          required: true

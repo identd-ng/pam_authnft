@@ -4,6 +4,12 @@
   <img src="docs/mascot.svg" alt="pam_authnft mascot" width="320">
 </p>
 
+> **Status: alpha (0.0.x).** Interfaces, configuration paths, and invariants
+> may change without notice. Review [docs/CONTRIBUTING.txt](docs/CONTRIBUTING.txt)
+> and [docs/ARCHITECTURE.txt](docs/ARCHITECTURE.txt) before deploying, and
+> report security issues via GitHub Security Advisories (see
+> [SECURITY.md](SECURITY.md)).
+
 A PAM session module that binds nftables firewall rules to authenticated user
 sessions using the session's cgroupv2 inode as a stable kernel identity.
 Works with any PAM-enabled service (SSH, login, su, VPN gateways, etc.) and
@@ -58,7 +64,9 @@ deleted. The nftables table and sets persist across sessions.
 ```
 make                # release build
 make debug          # rebuild with -DDEBUG -g for stderr tracing
+make man            # build pam_authnft(8) manpage (requires pandoc)
 sudo make install   # installs pam_authnft.so and authnft.slice
+sudo make install-man
 ```
 
 Installs the module to `/usr/lib/security/pam_authnft.so` and

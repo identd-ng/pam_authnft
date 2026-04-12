@@ -6,6 +6,8 @@
 CC         = gcc
 PKG_CONFIG = pkg-config
 PAM_DIR    = /usr/lib/security
+MAN_DIR    = /usr/share/man/man8
+PANDOC     = pandoc
 TEST_USER  ?= authnft-test
 CFLAGS     =
 
@@ -47,8 +49,32 @@ $(TARGET): $(OBJS)
 	$(CC) $(SO_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) `$(PKG_CONFIG) --libs $(LIBS)`
 
 # Unit tests — no root required. Stages that need CAP_NET_ADMIN skip gracefully.
-test: $(TEST_BIN)
+test: test-symbols $(TEST_BIN)
 	./$(TEST_BIN)
+
+# Invariant guard #7: exported symbols must be exactly the two PAM entry points.
+# Catches missing `static`, accidental re-exports, and broken version scripts.
+test-symbols: $(TARGET)
+	@echo "[STAGE 0] Exported symbol whitelist..."
+	@exported=$$(nm -D --defined-only $(TARGET) | awk '$$2=="T"{print $$3}' | sort | xargs); \
+	expected="pam_sm_close_session pam_sm_open_session"; \
+	if [ "$$exported" = "$$expected" ]; then \
+	    echo "[PASS] exactly two symbols exported"; \
+	else \
+	    echo "[FAIL] expected \"$$expected\", got \"$$exported\""; \
+	    exit 1; \
+	fi
+
+# Audit aid for invariant guard #5 (seccomp allowlist provenance).
+# Runs the integration harness with the sandbox bypassed under strace -c and
+# prints a syscall summary. Review trace.log and diff against the allowlist
+# in src/sandbox.c before landing any addition.
+trace: $(TARGET)
+	@command -v strace >/dev/null || { echo "strace not installed"; exit 1; }
+	@sudo -E AUTHNFT_NO_SANDBOX=1 strace -f -c -o trace.log \
+	    ./tests/integration_test.sh $(CURDIR)/$(TARGET) >/dev/null 2>&1 || true
+	@echo "Syscall summary written to trace.log."
+	@echo "Compare against the allowlist in src/sandbox.c."
 
 $(TEST_BIN): $(TARGET)
 	$(CC) $(CFLAGS_BASE) $(LDFLAGS_BASE) -g -O1 \
@@ -72,9 +98,21 @@ install: $(TARGET)
 
 uninstall:
 	sudo rm -f $(PAM_DIR)/$(TARGET)
+	sudo rm -f $(MAN_DIR)/pam_authnft.8.gz
+
+# Manpage — requires pandoc. Builds pam_authnft.8 from man/pam_authnft.8.md.
+man: man/pam_authnft.8
+
+man/pam_authnft.8: man/pam_authnft.8.md
+	$(PANDOC) -s -t man $< -o $@
+
+install-man: man/pam_authnft.8
+	sudo install -d $(MAN_DIR)
+	sudo install -m 644 man/pam_authnft.8 $(MAN_DIR)/pam_authnft.8
+	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log
+	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log man/pam_authnft.8
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -82,4 +120,4 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean test test-integration distclean install uninstall
+.PHONY: all debug clean test test-symbols test-integration trace distclean install uninstall man install-man

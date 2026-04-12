@@ -89,4 +89,56 @@ fi
 pamtester authnft_test root close_session
 pass "Root pass-through verified"
 
+# Write a clean valid fragment for subsequent stages
+FRAGMENT="$RULES_DIR/$TEST_USER"
+valid_fragment() {
+    echo "add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 accept" \
+        > "$FRAGMENT"
+    chown root:root "$FRAGMENT"
+    chmod 644 "$FRAGMENT"
+}
+
+# 10.4: Invariant #4 — fragment must be root-owned.
+printf "${YELLOW}10.4: Fragment rejected when not root-owned${RESET}\n"
+valid_fragment
+chown "$TEST_USER:$TEST_USER" "$FRAGMENT"
+if pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/null 2>&1; then
+    fail "Non-root-owned fragment was accepted"
+fi
+pass "Non-root-owned fragment correctly rejected"
+
+# 10.5: Invariant #4 — fragment must not be world-writable.
+printf "${YELLOW}10.5: Fragment rejected when world-writable${RESET}\n"
+valid_fragment
+chmod 666 "$FRAGMENT"
+if pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/null 2>&1; then
+    fail "World-writable fragment was accepted"
+fi
+pass "World-writable fragment correctly rejected"
+
+# 10.6: Invariant #1 — cg_id persisted via PAM data must survive into
+# close_session so the set element is deleted cleanly. Running open_session
+# and close_session in one pamtester invocation keeps the PAM handle alive;
+# if the close path ever regresses to re-resolving the cgroup from getpid(),
+# the element will not be deleted and this assertion will catch it.
+printf "${YELLOW}10.6: Element cleanup via persisted cg_id${RESET}\n"
+valid_fragment
+if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
+        open_session close_session > /dev/null 2>&1; then
+    fail "open+close in a single PAM handle failed"
+fi
+if nft list set inet authnft session_map_ipv4 2>/dev/null | grep -q 'elements'; then
+    fail "Element persisted after close_session — cg_id persistence path broken"
+fi
+pass "Element deleted at close_session"
+
+# 10.7: Invariant #6 — close_session is best-effort. A close with no prior
+# open (no stored cg_id in PAM data) must still return PAM_SUCCESS so the
+# session can always unwind.
+printf "${YELLOW}10.7: close_session best-effort when state missing${RESET}\n"
+if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" close_session > /dev/null 2>&1; then
+    fail "close_session without prior open did not return PAM_SUCCESS"
+fi
+pass "close_session best-effort semantics preserved"
+
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"

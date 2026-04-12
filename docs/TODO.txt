@@ -1,0 +1,31 @@
+pam_authnft TODO
+================
+
+Near-term
+---------
+[ ] Publish pam_authnft(8) manpage via `make install`
+[ ] Dependabot + CodeQL rollout validation
+[ ] cppcheck workflow
+[ ] ASan/UBSan build target for CI
+[ ] Fuzz harness for util_is_valid_username
+[ ] Integration test for IPv6 path (currently only v4 is exercised)
+[ ] Investigate pamtester SIGSYS on modern glibc — expand seccomp allowlist or narrow it via strace audit
+
+Medium-term
+-----------
+[ ] Per-session resource controls documented with concrete examples
+[ ] Fragment linter (wraps libnftables dry-run, runs as pre-commit on /etc/authnft/users)
+[ ] Structured journald fields instead of free-form pam_syslog text
+[ ] Optional audit subsystem hook on fragment rejection
+[ ] Pluggable fragment sources (not just /etc/authnft/users/<name>)
+
+Deferred
+--------
+[ ] Cgroupv1/hybrid support — not planned; document as unsupported
+[ ] Non-systemd init — not planned
+[ ] Shipping a default fragment set — administrator responsibility
+
+Upstream / ecosystem
+--------------------
+[ ] Package for Arch (AUR) and Debian
+[ ] Submit to distro PAM module lists once past alpha

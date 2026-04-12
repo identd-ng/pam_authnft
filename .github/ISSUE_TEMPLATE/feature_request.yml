@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a change to pam_authnft
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that pam_authnft does not currently support?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: |
+        How should it work? If the change touches one of the invariants
+        listed in docs/CONTRIBUTING.txt (lifecycle ordering, seccomp
+        allowlist, fragment trust model, exported symbol set),
+        say so explicitly.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds or related tools, and why they fall short.

@@ -1,0 +1,140 @@
+pam_authnft architecture
+========================
+
+Goal
+----
+
+Bind an nftables rule to an authenticated user session for the lifetime
+of that session, without a dedicated login shell, setuid binary, or
+kernel module. OpenBSD's pf achieves this with anchors and pfctl.
+pam_authnft achieves it on Linux with a named nftables set keyed on
+`(cgroup_inode, src_ip)`, plus a systemd transient scope that pins the
+session's processes to a stable cgroup.
+
+
+Moving parts
+------------
+
+    PAM service (sshd, login, ...)
+        |
+        | open_session
+        v
+    +------------------------------+
+    |  pam_authnft.so              |
+    |  (runs in the PAM process)   |
+    +------------------------------+
+        |    |              |
+        |    |              +---> libnftables ---> kernel nf_tables
+        |    |
+        |    +---> sd-bus StartTransientUnit ---> systemd ---> cgroupv2
+        |
+        +---> libseccomp ---> kernel seccomp-BPF (filters self)
+
+
+Session identity
+----------------
+
+Linux assigns every cgroupv2 directory a unique 64-bit inode, stable for
+the cgroup's lifetime. systemd, asked over D-Bus to start a transient
+`.scope` with `PIDs=[session_pid]`, places the session process into a
+fresh cgroup. The module resolves that cgroup's path via
+`sd_pid_get_cgroup(3)` and reads the inode from
+`/sys/fs/cgroup/<path>` (fallback: `/sys/fs/cgroup/unified<path>`).
+That inode is the session identity.
+
+At packet classification time, `meta cgroup` in nftables reads the
+inode from the socket's originating cgroup. Rules keyed on the named
+set `session_map_ipv{4,6}` therefore match every process under the
+session scope without ever naming uids, pids, or usernames.
+
+
+Open-session sequence
+---------------------
+
+    1. PAM_USER validated (util_is_valid_username)
+    2. Root short-circuits to PAM_SUCCESS
+    3. PAM_RHOST retrieved and parsed with inet_pton for AF_INET/AF_INET6
+    4. sandbox_apply installs SCMP_ACT_KILL filter (PR_SET_NO_NEW_PRIVS
+       set first)
+    5. bus_handler_start invokes StartTransientUnit:
+         unit = "authnft-<user>-<pid>.scope"
+         slice = "authnft.slice"
+         job mode = "fail"
+    6. util_get_cgroup_id stats /sys/fs/cgroup<path> for st_ino
+    7. cg_id persisted via pam_set_data("authnft_cg_id", ...)
+       (the free callback is registered so PAM reclaims it)
+    8. nft_handler_setup:
+         - getgrnam("authnft") + getpwnam(user); non-members pass through
+         - stat(fragment): st_uid == 0 and !(mode & S_IWOTH)
+         - call 1: add table/sets/chain + insert element
+                   { cg_id . src_ip timeout 1d comment "<user> (PID:<pid>)" }
+         - call 2: include "<fragment>"
+
+Each call is a separate nft_run_cmd_from_buffer. libnftables does not
+support `include` inside declarative blocks; the element is inserted
+first so the fragment can reference the set.
+
+
+Close-session sequence
+----------------------
+
+    1. Root short-circuits
+    2. cg_id retrieved from PAM data (not re-resolved from the PID —
+       the transient scope may already be gone)
+    3. PAM_RHOST read
+    4. nft_handler_cleanup: delete element { cg_id . src_ip } from the
+       IPv4 or IPv6 set
+
+Cleanup failures log a warning and return PAM_SUCCESS. The 24-hour
+element timeout catches orphans.
+
+
+Trust model
+-----------
+
+- The module runs with whatever privilege PAM grants the calling service
+  (typically root). There is no privilege drop; instead, the attack
+  surface is contained with seccomp-BPF.
+- Fragments must be root-owned and not world-writable. This is the same
+  model used by /etc/nftables.conf and sudoers includes. Administrators
+  author fragments; users never do.
+- Non-members of the `authnft` group pass through without nftables
+  interaction. Membership is the opt-in.
+- Usernames are validated against a conservative charset
+  (`[A-Za-z0-9._-]`, max 32, no leading `-` or `.`) before being
+  interpolated into nft commands, D-Bus unit names, or filesystem paths.
+
+
+Seccomp
+-------
+
+`SCMP_ACT_KILL` default. The allowlist is strace-derived: only syscalls
+observed after `sandbox_apply()` returns during a full open+close cycle
+are included. PR_SET_NO_NEW_PRIVS is set before `seccomp_load`. The
+bypass (env `AUTHNFT_NO_SANDBOX` or PAM arg `AUTHNFT_NO_SANDBOX=1`) is
+for developer iteration only; do not enable it in deployment.
+
+
+What does not live here
+-----------------------
+
+- Authentication: pam_authnft is a session module, not an auth module.
+  `PAM_USER` is accepted from whatever auth stack ran before it.
+- Fragment content: only structural validation happens
+  (ownership, mode, syntactic check by libnftables). Semantic choices
+  — which ports to open, whether to NAT, etc. — are the administrator's.
+- Per-session resource limits: provided by systemd via the transient
+  scope and the parent `authnft.slice`. See `man
+  systemd.resource-control(5)` and `data/authnft.slice`.
+
+
+Known limits
+------------
+
+- cgroupv2 unified hierarchy only. Hybrid mounts are untested.
+- Hard systemd dependency for the transient scope.
+- On PAM stacks where the process invoking open_session is not the
+  direct parent of the user session (forking daemon that hands off
+  before the module runs), the resolved cgroup may differ from the
+  session's eventual cgroup.
+- Fragment semantic errors pass validation; administrators own them.
