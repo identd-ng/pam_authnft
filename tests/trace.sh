@@ -56,7 +56,7 @@ EOF
 
 # Trace a single open+close cycle. The module's seccomp is bypassed so the
 # strace captures the full syscall set the module WOULD need to allow.
-# pamtester's own stdout chatter ("sucessfully opened a session", etc.) is
+# pamtester's own stdout chatter ("successfully opened a session", etc.) is
 # not relevant to the syscall audit; drop it. strace writes the summary to
 # trace.log via -o, so stderr does not need redirecting.
 AUTHNFT_NO_SANDBOX=1 strace -f -c -o trace.log \
@@ -68,5 +68,5 @@ echo ""
 cat trace.log
 echo ""
 echo "Compare against SCMP_SYS(...) entries in src/sandbox.c."
-echo "Syscalls that legitimately run before dlopen (e.g. execve) belong"
+echo "Syscalls that legitimately run before dlopen (e.g. execve) should be"
 echo "excluded per the explanatory comment at the top of src/sandbox.c."
