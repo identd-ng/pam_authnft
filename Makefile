@@ -66,15 +66,14 @@ test-symbols: $(TARGET)
 	fi
 
 # Audit aid for invariant guard #5 (seccomp allowlist provenance).
-# Runs the integration harness with the sandbox bypassed under strace -c and
-# prints a syscall summary. Review trace.log and diff against the allowlist
-# in src/sandbox.c before landing any addition.
+# Runs one pamtester open+close cycle under `strace -f -c` with the sandbox
+# bypassed, producing a syscall summary in trace.log. This is NOT a gate —
+# review the summary and diff against SCMP_SYS(...) in src/sandbox.c before
+# adding any syscall to the allowlist.
 trace: $(TARGET)
 	@command -v strace >/dev/null || { echo "strace not installed"; exit 1; }
-	@sudo -E AUTHNFT_NO_SANDBOX=1 strace -f -c -o trace.log \
-	    ./tests/integration_test.sh $(CURDIR)/$(TARGET) >/dev/null 2>&1 || true
-	@echo "Syscall summary written to trace.log."
-	@echo "Compare against the allowlist in src/sandbox.c."
+	@command -v pamtester >/dev/null || { echo "pamtester not installed"; exit 1; }
+	sudo ./tests/trace.sh $(CURDIR)/$(TARGET)
 
 $(TEST_BIN): $(TARGET)
 	$(CC) $(CFLAGS_BASE) $(LDFLAGS_BASE) -g -O1 \

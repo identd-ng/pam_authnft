@@ -9,7 +9,7 @@ Near-term
 [ ] ASan/UBSan build target for CI
 [ ] Fuzz harness for util_is_valid_username
 [ ] Integration test for IPv6 path (currently only v4 is exercised)
-[ ] Investigate pamtester SIGSYS on modern glibc — expand seccomp allowlist or narrow it via strace audit
+[ ] Periodically re-run `make trace` on kernel/glibc upgrades to catch syscall drift
 
 Medium-term
 -----------
