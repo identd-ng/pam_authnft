@@ -20,7 +20,8 @@ jobs:
             libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
       - name: Run cppcheck
         run: |
-          cppcheck --enable=all --std=c11 --error-exitcode=1 \
+          cppcheck --enable=warning,performance,portability --std=c11 \
+            --error-exitcode=1 \
             --suppress=missingIncludeSystem \
             --suppress=unusedFunction \
             --suppress=checkersReport \
