@@ -1,0 +1,43 @@
+name: coverity
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl \
+            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
+      - name: Download Coverity build tool
+        env:
+          TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+        run: |
+          curl -sS --form project=identd-ng/pam_authnft --form token=$TOKEN \
+            -o cov-analysis.tgz https://scan.coverity.com/download/linux64
+          mkdir cov-analysis
+          tar xzf cov-analysis.tgz --strip 1 -C cov-analysis
+      - name: Build with cov-build
+        run: |
+          export PATH=$PWD/cov-analysis/bin:$PATH
+          cov-build --dir cov-int make
+      - name: Submit to Coverity Scan
+        env:
+          TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+        run: |
+          tar czf cov-int.tgz cov-int
+          curl --form token=$TOKEN \
+            --form email=${{ github.event.repository.owner.email || 'noreply@github.com' }} \
+            --form file=@cov-int.tgz \
+            --form version=$GITHUB_SHA \
+            --form description="GH Actions $GITHUB_SHA" \
+            https://scan.coverity.com/builds?project=identd-ng/pam_authnft

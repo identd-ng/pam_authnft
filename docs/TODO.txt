@@ -5,9 +5,16 @@ Near-term
 ---------
 [ ] Publish pam_authnft(8) manpage via `make install`
 [ ] Dependabot + CodeQL rollout validation
-[ ] cppcheck workflow
-[ ] ASan/UBSan build target for CI
-[ ] Fuzz harness for util_is_valid_username
+[x] cppcheck workflow
+[x] ASan/UBSan build target for CI
+[x] GCC + Clang build matrix in CI
+[x] Coverity Scan weekly cron
+[x] Codecov coverage upload
+[x] OpenSSF Scorecard
+[ ] CIFuzz / OSS-Fuzz integration — write libFuzzer harness
+    (starting with util_is_valid_username and nft rule parsing),
+    apply for OSS-Fuzz onboarding, wire in the CIFuzz action for
+    per-PR short fuzz runs
 [ ] Integration test for IPv6 path (currently only v4 is exercised)
 [ ] Periodically re-run `make trace` on kernel/glibc upgrades to catch syscall drift
 

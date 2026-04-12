@@ -1,5 +1,15 @@
 # pam_authnft
 
+[![build](https://github.com/identd-ng/pam_authnft/actions/workflows/build.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/build.yml)
+[![sanitizers](https://github.com/identd-ng/pam_authnft/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/sanitizers.yml)
+[![CodeQL](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml)
+[![cppcheck](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml)
+[![Coverity Scan](https://scan.coverity.com/projects/identd-ng-pam_authnft/badge.svg)](https://scan.coverity.com/projects/identd-ng-pam_authnft)
+[![codecov](https://codecov.io/gh/identd-ng/pam_authnft/branch/master/graph/badge.svg)](https://codecov.io/gh/identd-ng/pam_authnft)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/identd-ng/pam_authnft/badge)](https://scorecard.dev/viewer/?uri=github.com/identd-ng/pam_authnft)
+[![Language: C](https://img.shields.io/badge/language-C-blue.svg)](https://en.wikipedia.org/wiki/C_(programming_language))
+[![License](https://img.shields.io/github/license/identd-ng/pam_authnft.svg)](LICENSE)
+
 <p align="center">
   <img src="docs/mascot.svg" alt="pam_authnft mascot" width="320">
 </p>

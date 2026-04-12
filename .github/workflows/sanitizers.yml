@@ -1,0 +1,36 @@
+name: sanitizers
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  sanitizers:
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
+      - name: Build with -fsanitize=${{ matrix.sanitizer }}
+        run: |
+          make CFLAGS_BASE="-fPIC -Wall -Wextra -g -O1 -Iinclude -D_GNU_SOURCE \
+            -fno-omit-frame-pointer -fsanitize=${{ matrix.sanitizer }}" \
+            LDFLAGS_BASE="-fsanitize=${{ matrix.sanitizer }}" \
+            all test
+      - name: Run sanitized tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ./authnft_test
