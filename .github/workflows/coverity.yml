@@ -22,7 +22,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
         run: |
-          curl -sS --form project=identd-ng/pam_authnft --form token=$TOKEN \
+          curl -sS --form project=pam_authnft --form token=$TOKEN \
             -o cov-analysis.tgz https://scan.coverity.com/download/linux64
           mkdir cov-analysis
           tar xzf cov-analysis.tgz --strip 1 -C cov-analysis
@@ -40,4 +40,4 @@ jobs:
             --form file=@cov-int.tgz \
             --form version=$GITHUB_SHA \
             --form description="GH Actions $GITHUB_SHA" \
-            https://scan.coverity.com/builds?project=identd-ng/pam_authnft
+            https://scan.coverity.com/builds?project=pam_authnft
