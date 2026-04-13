@@ -5,7 +5,7 @@
 [![CodeQL](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml)
 [![cppcheck](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml)
 [![Coverity Scan](https://scan.coverity.com/projects/pam_authnft/badge.svg)](https://scan.coverity.com/projects/pam_authnft)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/identd-ng/pam_authnft/badge)](https://scorecard.dev/viewer/?uri=github.com/identd-ng/pam_authnft)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12496/badge)](https://www.bestpractices.dev/projects/12496)
 [![Language: C](https://img.shields.io/badge/language-C-blue.svg)](https://en.wikipedia.org/wiki/C_(programming_language))
 [![License](https://img.shields.io/github/license/identd-ng/pam_authnft.svg)](LICENSE)
 
