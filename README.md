@@ -7,7 +7,7 @@
 [![Coverity Scan](https://scan.coverity.com/projects/pam_authnft/badge.svg)](https://scan.coverity.com/projects/pam_authnft)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12496/badge)](https://www.bestpractices.dev/projects/12496)
 [![Language: C](https://img.shields.io/badge/language-C-blue.svg)](https://en.wikipedia.org/wiki/C_(programming_language))
-[![License](https://img.shields.io/github/license/identd-ng/pam_authnft.svg)](LICENSE)
+[![License: GPL v2+](https://img.shields.io/badge/license-GPL--2.0--or--later-blue.svg)](LICENSE)
 
 <p align="center">
   <img src="docs/mascot.svg" alt="pam_authnft mascot" width="320">
@@ -228,3 +228,14 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 7 | `nft_handler_setup` loads a root-owned fragment end-to-end |
 | 8 | Group member denied on missing fragment; allowed with valid fragment; root bypasses |
 | 9 | No memory errors or leaks under Valgrind memcheck |
+
+## License
+
+GPL-2.0-or-later.  See [LICENSE](LICENSE) for details.
+
+Every source file carries an `SPDX-License-Identifier: GPL-2.0-or-later`
+tag.  Recipients may redistribute and/or modify the software under the
+terms of GPL-2.0, or, at their option, any later version published by
+the Free Software Foundation.
+
+Copyright (C) 2025-2026 Avinash H. Duduskar.
