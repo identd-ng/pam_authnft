@@ -39,11 +39,36 @@ int util_is_valid_username(const char *user) {
     return 1;
 }
 
+int util_normalize_ip(const char *in, char *out, size_t out_sz) {
+    if (!in || !out || out_sz == 0) return 0;
+    unsigned char addr_buf[sizeof(struct in6_addr)];
+
+    /* Strip an IPv6 zone suffix ("fe80::1%eth0" -> "fe80::1"). nftables
+     * ip6 saddr does not accept zone identifiers; the zone is meaningful
+     * only to the host's socket layer, and discarding it here lets the
+     * kernel's normal scope rules handle routing. */
+    const char *pct = strchr(in, '%');
+    size_t core_len = pct ? (size_t)(pct - in) : strlen(in);
+    if (core_len == 0 || core_len >= out_sz) return 0;
+
+    char core[IP_STR_MAX];
+    if (core_len >= sizeof(core)) return 0;
+    memcpy(core, in, core_len);
+    core[core_len] = '\0';
+
+    if (inet_pton(AF_INET, core, addr_buf) != 1 &&
+        inet_pton(AF_INET6, core, addr_buf) != 1)
+        return 0;
+
+    memcpy(out, core, core_len + 1);
+    return 1;
+}
+
 PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
                                     int argc, const char **argv) {
     const char *user = NULL;
     const char *rhost = NULL;
-    unsigned char addr_buf[sizeof(struct in6_addr)];
+    char norm_ip[IP_STR_MAX] = {0};
     int session_pid = getpid();
     uint64_t cg_id = 0;
 
@@ -60,15 +85,33 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
 
     DEBUG_PRINT("PAM: open_session for user=%s pid=%d", user, session_pid);
 
-    if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) != PAM_SUCCESS || !rhost) {
-        DEBUG_PRINT("PAM: PAM_RHOST not set, skipping");
-        return PAM_SUCCESS;
+    /*
+     * PAM_RHOST handling. sshd with `UseDNS yes` writes a hostname here,
+     * not an IP; historically that tripped inet_pton and denied login.
+     * Default policy (lax): normalize if possible, else fall through to
+     * the cgroup-only set so session identity is still enforced.
+     * Strict policy (rhost_policy=strict): preserve the historical deny.
+     */
+    int strict_rhost = 0;
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "rhost_policy=strict") == 0) strict_rhost = 1;
     }
 
-    if (inet_pton(AF_INET, rhost, addr_buf) != 1 &&
-        inet_pton(AF_INET6, rhost, addr_buf) != 1) {
-        DEBUG_PRINT("PAM: invalid IP for PAM_RHOST: %s", rhost);
-        return PAM_SESSION_ERR;
+    if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) != PAM_SUCCESS || !rhost) {
+        DEBUG_PRINT("PAM: PAM_RHOST not set");
+        if (strict_rhost) return PAM_SESSION_ERR;
+        /* norm_ip stays empty -> cg-only path */
+    } else if (!util_normalize_ip(rhost, norm_ip, sizeof(norm_ip))) {
+        DEBUG_PRINT("PAM: unparseable PAM_RHOST: %s", rhost);
+        if (strict_rhost) {
+            pam_syslog(pamh, LOG_ERR,
+                       "authnft: PAM_RHOST '%s' not an IP literal (strict policy)", rhost);
+            return PAM_SESSION_ERR;
+        }
+        pam_syslog(pamh, LOG_INFO,
+                   "authnft: PAM_RHOST '%s' not an IP literal, binding cgroup only",
+                   rhost);
+        norm_ip[0] = '\0';
     }
 
     if (is_debug_bypass_requested(argc, argv)) {
@@ -90,31 +133,32 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     }
 
     /*
-     * Persist the cgroup ID for close_session. The transient .scope created by
-     * bus_handler_start may already be gone by the time close_session runs, so
-     * re-resolving the cgroup from the PID is unreliable. Storing cg_id here
-     * guarantees that nft_handler_cleanup can delete the exact set element that
-     * was inserted, preventing a leak of the { cg_id . src_ip } entry.
+     * Persist cg_id + the normalized IP that was actually bound. The stored
+     * remote_ip (empty string for the cg-only path) tells close_session which
+     * set to delete from, removing the v4-vs-v6 strchr(':') guess and making
+     * the cg-only path's cleanup deterministic. Key name predates this struct
+     * (invariant #3); kept for compatibility.
      */
-    uint64_t *stored_cg = malloc(sizeof(uint64_t));
-    if (!stored_cg) {
-        pam_syslog(pamh, LOG_ERR, "authnft: out of memory storing cgroup ID");
+    authnft_session_t *sd = calloc(1, sizeof(*sd));
+    if (!sd) {
+        pam_syslog(pamh, LOG_ERR, "authnft: out of memory storing session data");
         return PAM_SESSION_ERR;
     }
-    *stored_cg = cg_id;
-    if (pam_set_data(pamh, "authnft_cg_id", stored_cg, free_pam_data) != PAM_SUCCESS) {
-        pam_syslog(pamh, LOG_ERR, "authnft: failed to store cgroup ID in PAM data");
-        free(stored_cg);
+    sd->cg_id = cg_id;
+    memcpy(sd->remote_ip, norm_ip, sizeof(sd->remote_ip));
+    if (pam_set_data(pamh, "authnft_cg_id", sd, free_pam_data) != PAM_SUCCESS) {
+        pam_syslog(pamh, LOG_ERR, "authnft: failed to store session data");
+        free(sd);
         return PAM_SESSION_ERR;
     }
 
-    return nft_handler_setup(pamh, user, cg_id, rhost);
+    return nft_handler_setup(pamh, user, cg_id,
+                             norm_ip[0] ? norm_ip : NULL);
 }
 
 PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
                                      int argc, const char **argv) {
     const char *user = NULL;
-    const char *rhost = NULL;
     (void)flags; (void)argc; (void)argv;
 
     if (pam_get_item(pamh, PAM_USER, (const void **)&user) != PAM_SUCCESS || !user)
@@ -123,24 +167,21 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
     if (strcmp(user, "root") == 0)
         return PAM_SUCCESS;
 
-    /* Retrieve the cgroup ID recorded at open_session. */
-    const uint64_t *stored_cg = NULL;
+    const authnft_session_t *sd = NULL;
     if (pam_get_data(pamh, "authnft_cg_id",
-                     (const void **)&stored_cg) != PAM_SUCCESS || !stored_cg) {
+                     (const void **)&sd) != PAM_SUCCESS || !sd) {
         pam_syslog(pamh, LOG_WARNING,
-                   "authnft: no stored cgroup ID for %s — element may persist", user);
+                   "authnft: no stored session data for %s — element may persist", user);
         return PAM_SUCCESS;
     }
-    uint64_t cg_id = *stored_cg;
 
-    DEBUG_PRINT("PAM: close_session for user=%s cg_id=%llu",
-                user, (unsigned long long)cg_id);
+    DEBUG_PRINT("PAM: close_session for user=%s cg_id=%llu ip='%s'",
+                user, (unsigned long long)sd->cg_id, sd->remote_ip);
 
-    if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) == PAM_SUCCESS && rhost) {
-        if (nft_handler_cleanup(pamh, user, cg_id, rhost) != PAM_SUCCESS)
-            pam_syslog(pamh, LOG_WARNING,
-                       "authnft: cleanup failed for %s — element may persist", user);
-    }
+    const char *ip = sd->remote_ip[0] ? sd->remote_ip : NULL;
+    if (nft_handler_cleanup(pamh, user, sd->cg_id, ip) != PAM_SUCCESS)
+        pam_syslog(pamh, LOG_WARNING,
+                   "authnft: cleanup failed for %s — element may persist", user);
 
     return PAM_SUCCESS;
 }

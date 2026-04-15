@@ -47,13 +47,22 @@ inode from the socket's originating cgroup. Rules keyed on the named
 set `session_map_ipv{4,6}` therefore match every process under the
 session scope without ever naming uids, pids, or usernames.
 
+A third set, `session_map_cg`, is keyed on cgroup only. It is used
+when `PAM_RHOST` is absent or not a parseable IP literal — most
+commonly when sshd is configured with `UseDNS yes` and hands PAM a
+hostname. Under the default `rhost_policy=lax`, the session is still
+pinned by cgroup; only the src_ip leg of the tuple is dropped.
+`rhost_policy=strict` restores the historical hard deny.
+
 
 Open-session sequence
 ---------------------
 
     1. PAM_USER validated (util_is_valid_username)
     2. Root short-circuits to PAM_SUCCESS
-    3. PAM_RHOST retrieved and parsed with inet_pton for AF_INET/AF_INET6
+    3. PAM_RHOST retrieved and normalized (util_normalize_ip): IPv4/IPv6
+       literals accepted; IPv6 zone suffix "%zone" stripped; hostnames
+       and unparseable values fall through (lax) or deny (strict)
     4. sandbox_apply installs SCMP_ACT_KILL filter (PR_SET_NO_NEW_PRIVS
        set first)
     5. bus_handler_start invokes StartTransientUnit:
@@ -66,8 +75,9 @@ Open-session sequence
     8. nft_handler_setup:
          - getgrnam("authnft") + getpwnam(user); non-members pass through
          - stat(fragment): st_uid == 0 and !(mode & S_IWOTH)
-         - call 1: add table/sets/chain + insert element
-                   { cg_id . src_ip timeout 1d comment "<user> (PID:<pid>)" }
+         - call 1: add table/sets/chain + insert element into
+                   session_map_ipv{4,6} as { cg_id . src_ip ... } or
+                   session_map_cg as { cg_id ... } when src_ip is absent
          - call 2: include "<fragment>"
 
 Each call is a separate nft_run_cmd_from_buffer. libnftables does not

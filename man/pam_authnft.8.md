@@ -8,7 +8,7 @@ pam_authnft - PAM session module that binds nftables rules to authenticated sess
 
 # SYNOPSIS
 
-**pam_authnft.so** [*AUTHNFT_NO_SANDBOX=1*]
+**pam_authnft.so** [*rhost_policy=strict|lax*] [*AUTHNFT_NO_SANDBOX=1*]
 
 # DESCRIPTION
 
@@ -24,6 +24,18 @@ The module exports only **pam_sm_open_session** and
 
 # OPTIONS
 
+**rhost_policy=lax** (default)
+:   If *PAM_RHOST* parses as an IPv4 or IPv6 literal, bind the session
+    element into *session_map_ipv4* / *session_map_ipv6* as
+    *{ cgroup_inode . src_ip }*. Otherwise — *PAM_RHOST* missing,
+    a hostname (*UseDNS yes* in sshd), or unparseable — fall back to
+    *session_map_cg*, which is keyed on *cgroup_inode* alone. Session
+    identity is still enforced; only the src_ip leg is dropped.
+
+**rhost_policy=strict**
+:   Restore the pre-0.2 behaviour: a valid IP literal in *PAM_RHOST* is
+    required; the session is denied with **PAM_SESSION_ERR** otherwise.
+
 **AUTHNFT_NO_SANDBOX=1**
 :   Disable the seccomp-BPF sandbox. Accepted as a module argument in the
     PAM config or as an environment variable. Intended for debugging
@@ -36,8 +48,12 @@ On session open, the module:
 1. Validates *PAM_USER* against a conservative charset
    (*[A-Za-z0-9._-]*, maximum 32 characters, no leading hyphen or dot).
 2. Short-circuits to **PAM_SUCCESS** for the **root** user.
-3. Retrieves *PAM_RHOST* and requires it to parse as an IPv4 or IPv6
-   address via **inet_pton**(3).
+3. Retrieves *PAM_RHOST* and normalizes it: IPv4 / IPv6 literals pass
+   through; an IPv6 zone suffix (*fe80::1%eth0*) is stripped because
+   nftables *ip6 saddr* does not accept zones. Hostnames (*UseDNS yes*)
+   and unparseable values fall through to the cgroup-only path under
+   the default **rhost_policy=lax**, or are rejected under
+   **rhost_policy=strict**.
 4. Installs a seccomp-BPF allowlist with **SCMP_ACT_KILL** as the
    default action, after setting **PR_SET_NO_NEW_PRIVS**.
 5. Calls **StartTransientUnit** on
@@ -55,9 +71,11 @@ On session open, the module:
 10. Issues two libnftables calls:
     - *add table inet authnft*; *add set session_map_ipv4 { typeof
       meta cgroup . ip saddr; flags timeout; }*; the corresponding IPv6
-      set; *add chain filter { type filter hook input priority filter
-      - 1; policy accept; }*; *add element { cg_id . src_ip timeout 1d
-      comment "..." }*.
+      set; *add set session_map_cg { typeof meta cgroup; flags timeout; }*;
+      *add chain filter { type filter hook input priority filter - 1;
+      policy accept; }*; *add element* into either
+      *session_map_ipv{4,6}* as *{ cg_id . src_ip ... }* or into
+      *session_map_cg* as *{ cg_id ... }*.
     - *include "/etc/authnft/users/\<user\>"* at the top level.
 
 On session close, the stored *cg_id* is retrieved from PAM data and
@@ -93,9 +111,9 @@ not prevent session teardown.
     member of the **authnft** group.
 
 **PAM_SESSION_ERR**
-:   Generic session setup failure: invalid user, unparseable
-    *PAM_RHOST*, seccomp load failure, systemd handoff failure, or
-    cgroup inode resolution failure.
+:   Generic session setup failure: invalid user, unparseable *PAM_RHOST*
+    under **rhost_policy=strict**, seccomp load failure, systemd handoff
+    failure, or cgroup inode resolution failure.
 
 **PAM_AUTH_ERR**
 :   Fragment missing, wrong ownership, world-writable, or contains a

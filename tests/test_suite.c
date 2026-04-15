@@ -164,6 +164,46 @@ static void run_path_resolution_test(void) {
         exit(1);
 }
 
+/* Stage 8: PAM_RHOST normalization — reject hostnames (UseDNS=yes), strip
+ * IPv6 zone IDs, pass through plain v4/v6. Class of regression: sshd
+ * UseDNS or link-local addresses must not deny the session. */
+static void run_rhost_normalization_test(void) {
+    printf("[STAGE 8] PAM_RHOST normalization...\n");
+    char out[IP_STR_MAX];
+
+    struct { const char *in; int expect_ok; const char *expect_out; } cases[] = {
+        { "192.0.2.1",       1, "192.0.2.1"  },
+        { "2001:db8::1",     1, "2001:db8::1"},
+        { "fe80::1%eth0",    1, "fe80::1"    },  /* zone stripped */
+        { "::ffff:10.0.0.1", 1, "::ffff:10.0.0.1" },
+        { "bastion.example", 0, NULL },           /* UseDNS hostname */
+        { "not an ip",       0, NULL },
+        { "",                0, NULL },
+        { "1.2.3.4 ; rm -rf /", 0, NULL },
+        { NULL, 0, NULL }
+    };
+    for (int i = 0; cases[i].in != NULL; i++) {
+        memset(out, 0, sizeof(out));
+        int r = util_normalize_ip(cases[i].in, out, sizeof(out));
+        if (r != cases[i].expect_ok) {
+            fprintf(stderr, "[FAIL] '%s': got ok=%d, want ok=%d\n",
+                    cases[i].in, r, cases[i].expect_ok);
+            exit(1);
+        }
+        if (r && strcmp(out, cases[i].expect_out) != 0) {
+            fprintf(stderr, "[FAIL] '%s': got '%s', want '%s'\n",
+                    cases[i].in, out, cases[i].expect_out);
+            exit(1);
+        }
+    }
+    /* Truncation: refuse if output buffer is too small. */
+    if (util_normalize_ip("2001:db8::1", out, 4) != 0) {
+        fprintf(stderr, "[FAIL] did not reject short buffer\n");
+        exit(1);
+    }
+    printf("[PASS]\n");
+}
+
 int main(void) {
     printf("--- pam_authnft unit tests ---\n\n");
     run_input_validation_test();
@@ -173,6 +213,7 @@ int main(void) {
     run_cgroup_logic_test();
     run_checksec_test();
     run_path_resolution_test();
+    run_rhost_normalization_test();
     printf("\n[DONE]\n");
     return 0;
 }

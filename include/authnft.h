@@ -20,24 +20,43 @@
 /* --- Configuration Constants --- */
 #define RULES_DIR "/etc/authnft/users"
 #define TABLE_NAME "authnft"
+#define SET_V4   "session_map_ipv4"
+#define SET_V6   "session_map_ipv6"
+#define SET_CG   "session_map_cg"
 
 /* --- Buffer Management --- */
 #define CMD_BUF_SIZE 2048
 #define UNIT_BUF_SIZE 128
 #define MAX_USER_LEN 32
+#define IP_STR_MAX   64   /* INET6_ADDRSTRLEN (46) + headroom */
+
+/*
+ * Session data persisted via pam_set_data("authnft_cg_id", ...).
+ * The key name predates this struct; it is kept for compatibility with the
+ * documented lifecycle invariant. `remote_ip[0] == '\0'` marks the cg-only
+ * fallback path, where no src_ip was bound.
+ */
+typedef struct {
+    uint64_t cg_id;
+    char     remote_ip[IP_STR_MAX];
+} authnft_session_t;
 
 /*
  * nft_handler_setup:
  * Checks 'authnft' group membership, validates the user's root-owned fragment,
- * and inserts the { cgroup_id . src_ip } element into the appropriate set.
+ * and inserts the session element. If remote_ip is NULL or empty, the element
+ * is inserted into session_map_cg (cgroup-only); otherwise it goes into the
+ * v4/v6 map selected by the address family.
  */
 int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                       const char *remote_ip);
 
 /*
  * nft_handler_cleanup:
- * Atomically removes the { cgroup_id . src_ip } element inserted at open_session.
- * cg_id is passed directly from PAM data to avoid re-resolution after scope teardown.
+ * Atomically removes the element inserted at open_session. Set selection
+ * mirrors nft_handler_setup: NULL/empty remote_ip targets session_map_cg.
+ * cg_id is passed directly from PAM data to avoid re-resolution after scope
+ * teardown.
  */
 int nft_handler_cleanup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                         const char *remote_ip);
@@ -69,5 +88,15 @@ int util_is_valid_username(const char *user);
  * and stat(2) on /sys/fs/cgroup/<path>.
  */
 int util_get_cgroup_id(pid_t pid, uint64_t *cg_id);
+
+/*
+ * util_normalize_ip:
+ * Validates an IP literal and writes a canonical form to out[out_sz].
+ * Accepts IPv4, IPv6, and IPv6 link-local with a zone suffix ("%zone");
+ * the zone is stripped because nftables ip6 saddr matches do not accept it.
+ * Returns 1 on success, 0 on any rejection (NULL, empty, hostname, overlong,
+ * malformed literal).
+ */
+int util_normalize_ip(const char *in, char *out, size_t out_sz);
 
 #endif /* AUTHNFT_H */

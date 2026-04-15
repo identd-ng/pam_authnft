@@ -74,9 +74,11 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
     }
 
     /* Nftables transaction: idempotent table/set/chain creation followed by
-     * inclusion of the user fragment and insertion of the session element. */
-    int is_v6 = (strchr(remote_ip, ':') != NULL);
-    const char *set_name = is_v6 ? "session_map_ipv6" : "session_map_ipv4";
+     * inclusion of the user fragment and insertion of the session element.
+     * remote_ip == NULL or empty selects the cgroup-only fallback set. */
+    int cg_only = (remote_ip == NULL || remote_ip[0] == '\0');
+    int is_v6 = !cg_only && (strchr(remote_ip, ':') != NULL);
+    const char *set_name = cg_only ? SET_CG : (is_v6 ? SET_V6 : SET_V4);
 
     ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx) return PAM_SERVICE_ERR;
@@ -85,16 +87,30 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
      * Two separate nft_run_cmd_from_buffer calls are required: nftables does not
      * support 'include' inside nested declarative blocks via the libnftables API.
      * The element is inserted first so the set exists before any rules in the
-     * fragment can reference it.
+     * fragment can reference it. session_map_cg exists so that fragments can
+     * still gate by cgroup when PAM_RHOST is absent or unparseable.
      */
-    result = snprintf(cmd, sizeof(cmd),
+    if (cg_only) {
+        result = snprintf(cmd, sizeof(cmd),
                   "add table inet %s\n"
-                  "add set inet %s session_map_ipv4 { typeof meta cgroup . ip saddr; flags timeout; }\n"
-                  "add set inet %s session_map_ipv6 { typeof meta cgroup . ip6 saddr; flags timeout; }\n"
+                  "add set inet %s " SET_V4 " { typeof meta cgroup . ip saddr; flags timeout; }\n"
+                  "add set inet %s " SET_V6 " { typeof meta cgroup . ip6 saddr; flags timeout; }\n"
+                  "add set inet %s " SET_CG " { typeof meta cgroup; flags timeout; }\n"
+                  "add chain inet %s filter { type filter hook input priority filter - 1; policy accept; }\n"
+                  "add element inet %s %s { %llu timeout 1d comment \"%s (PID:%d)\" }",
+                  TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME,
+                  TABLE_NAME, set_name, (unsigned long long)cg_id, user, getpid());
+    } else {
+        result = snprintf(cmd, sizeof(cmd),
+                  "add table inet %s\n"
+                  "add set inet %s " SET_V4 " { typeof meta cgroup . ip saddr; flags timeout; }\n"
+                  "add set inet %s " SET_V6 " { typeof meta cgroup . ip6 saddr; flags timeout; }\n"
+                  "add set inet %s " SET_CG " { typeof meta cgroup; flags timeout; }\n"
                   "add chain inet %s filter { type filter hook input priority filter - 1; policy accept; }\n"
                   "add element inet %s %s { %llu . %s timeout 1d comment \"%s (PID:%d)\" }",
-                  TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME,
+                  TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME,
                   TABLE_NAME, set_name, (unsigned long long)cg_id, remote_ip, user, getpid());
+    }
 
     if (result < 0 || (size_t)result >= sizeof(cmd)) {
         nft_ctx_free(ctx);
@@ -137,18 +153,25 @@ int nft_handler_cleanup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
     char cmd[CMD_BUF_SIZE];
 
     if (strcmp(user, "root") == 0) return PAM_SUCCESS;
-    if (!remote_ip || cg_id == 0) return PAM_SESSION_ERR;
+    if (cg_id == 0) return PAM_SESSION_ERR;
 
-    DEBUG_PRINT("nft_handler_cleanup: user=%s cg=%llu", user, (unsigned long long)cg_id);
+    int cg_only = (remote_ip == NULL || remote_ip[0] == '\0');
+    int is_v6 = !cg_only && (strchr(remote_ip, ':') != NULL);
+    const char *set_name = cg_only ? SET_CG : (is_v6 ? SET_V6 : SET_V4);
 
-    int is_v6 = (strchr(remote_ip, ':') != NULL);
-    const char *set_name = is_v6 ? "session_map_ipv6" : "session_map_ipv4";
+    DEBUG_PRINT("nft_handler_cleanup: user=%s cg=%llu set=%s",
+                user, (unsigned long long)cg_id, set_name);
 
     ctx = nft_ctx_new(NFT_CTX_DEFAULT);
     if (!ctx) return PAM_SESSION_ERR;
 
-    snprintf(cmd, sizeof(cmd), "delete element inet %s %s { %llu . %s }",
-             TABLE_NAME, set_name, (unsigned long long)cg_id, remote_ip);
+    if (cg_only) {
+        snprintf(cmd, sizeof(cmd), "delete element inet %s %s { %llu }",
+                 TABLE_NAME, set_name, (unsigned long long)cg_id);
+    } else {
+        snprintf(cmd, sizeof(cmd), "delete element inet %s %s { %llu . %s }",
+                 TABLE_NAME, set_name, (unsigned long long)cg_id, remote_ip);
+    }
 
     DEBUG_PRINT("cleanup: %s", cmd);
     if (nft_run_cmd_from_buffer(ctx, cmd) != 0) {
