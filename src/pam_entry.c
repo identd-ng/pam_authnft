@@ -96,9 +96,11 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
      *                   semantics if the kernel lookup fails.
      */
     int strict_rhost = 0, kernel_rhost = 0;
+    const char *claims_env = NULL;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "rhost_policy=strict") == 0) strict_rhost = 1;
         else if (strcmp(argv[i], "rhost_policy=kernel") == 0) kernel_rhost = 1;
+        else if (strncmp(argv[i], "claims_env=", 11) == 0) claims_env = argv[i] + 11;
     }
 
     int rhost_parsed = 0;
@@ -176,6 +178,10 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     }
     sd->cg_id = cg_id;
     memcpy(sd->remote_ip, norm_ip, sizeof(sd->remote_ip));
+    if (claims_env) {
+        (void)keyring_fetch_tag(pamh, claims_env, sd->claims_tag,
+                                sizeof(sd->claims_tag));
+    }
     if (pam_set_data(pamh, "authnft_cg_id", sd, free_pam_data) != PAM_SUCCESS) {
         pam_syslog(pamh, LOG_ERR, "authnft: failed to store session data");
         free(sd);
@@ -183,7 +189,8 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     }
 
     return nft_handler_setup(pamh, user, cg_id,
-                             norm_ip[0] ? norm_ip : NULL);
+                             norm_ip[0] ? norm_ip : NULL,
+                             sd->claims_tag[0] ? sd->claims_tag : NULL);
 }
 
 PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,

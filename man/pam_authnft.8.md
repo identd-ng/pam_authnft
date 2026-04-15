@@ -8,7 +8,7 @@ pam_authnft - PAM session module that binds nftables rules to authenticated sess
 
 # SYNOPSIS
 
-**pam_authnft.so** [*rhost_policy=strict|lax|kernel*] [*AUTHNFT_NO_SANDBOX=1*]
+**pam_authnft.so** [*rhost_policy=strict|lax|kernel*] [*claims_env=NAME*] [*AUTHNFT_NO_SANDBOX=1*]
 
 # DESCRIPTION
 
@@ -48,6 +48,19 @@ The module exports only **pam_sm_open_session** and
     protocol not terminated) or **UseDNS yes**. If the kernel lookup
     fails (no ESTABLISHED TCP socket on the session PID, netlink denied),
     the module falls through to **rhost_policy=lax** semantics.
+
+**claims_env=NAME**
+:   Look up PAM environment variable *NAME* for a kernel-keyring serial
+    (decimal *key_serial_t*). When present, the keyed payload is read via
+    **keyctl**(2), sanitized to a printable ASCII subset, and embedded
+    inside the nftables element's *comment* field as
+    *"\<user\> (PID:\<pid\>) [\<tag\>]"*. The producer of the keyring
+    entry is responsible for setting an appropriate timeout
+    (*KEYCTL_SET_TIMEOUT*) and access mode (*KEYCTL_SETPERM*); this
+    module never writes keys, only reads. If the env var is absent, the
+    serial is malformed, or the key is inaccessible, the module
+    proceeds without a tag — **claims_env** is non-fatal by design.
+    See **keyctl**(2), **keyrings**(7).
 
 **AUTHNFT_NO_SANDBOX=1**
 :   Disable the seccomp-BPF sandbox. Accepted as a module argument in the

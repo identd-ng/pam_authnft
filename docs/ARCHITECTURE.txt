@@ -54,6 +54,14 @@ hostname. Under the default `rhost_policy=lax`, the session is still
 pinned by cgroup; only the src_ip leg of the tuple is dropped.
 `rhost_policy=strict` restores the historical hard deny.
 
+An optional `claims_env=NAME` argument tells the module to look up the
+named PAM environment variable for a kernel-keyring serial. If set, the
+keyed payload is read via `keyctl(2)` and sanitized into the
+nftables element comment, providing a forensic correlation back to
+whatever root-trusted PAM module produced the entry. The keyring entry
+is created and owned by that producer; pam_authnft is read-only on this
+path. See `keyctl(2)` and `keyrings(7)`.
+
 `rhost_policy=kernel` is the strongest option: the module derives the
 peer IP from the session process's own ESTABLISHED TCP socket via
 NETLINK_SOCK_DIAG (see `ss(8)`), and logs a warning when the

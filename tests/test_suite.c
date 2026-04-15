@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/personality.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <sys/capability.h>
@@ -153,7 +154,7 @@ static void run_path_resolution_test(void) {
              mock_path, mock_path);
     (void)system(cmd);
 
-    int res = nft_handler_setup(NULL, test_user, 12345, "127.0.0.1");
+    int res = nft_handler_setup(NULL, test_user, 12345, "127.0.0.1", NULL);
 
     snprintf(cmd, sizeof(cmd), "sudo rm -f %s", mock_path);
     (void)system(cmd);
@@ -261,6 +262,52 @@ static void run_peer_lookup_test(void) {
     printf("[PASS] peer=%s\n", peer);
 }
 
+/* Stage 10: kernel-keyring read-back. Adds a synthetic key into the
+ * caller's session keyring containing a payload with both safe and
+ * unsafe bytes, then asserts keyring_read_serial returns the safe-only
+ * sanitized form. Class of regression: keyctl(2) wiring, sanitization
+ * map, or buffer accounting broken. Uses add_key(2) directly to keep
+ * the test self-contained — no keyctl(1) dependency. */
+static long add_key_syscall(const char *type, const char *desc,
+                             const void *payload, size_t plen, int32_t kr) {
+    return syscall(SYS_add_key, type, desc, payload, plen, (unsigned long)kr);
+}
+
+#define KEY_SPEC_PROCESS_KEYRING (-2)
+
+static void run_keyring_test(void) {
+    printf("[STAGE 10] kernel-keyring tag fetch...\n");
+
+    const char raw[] = "scope=admin;jti=abc123\nshell=$(rm -rf /)";
+    long serial = add_key_syscall("user", "authnft_test_tag",
+                                   raw, sizeof(raw) - 1,
+                                   KEY_SPEC_PROCESS_KEYRING);
+    if (serial < 0) {
+        printf("[SKIP] add_key denied: %s\n", strerror(errno));
+        return;
+    }
+
+    char tag[CLAIMS_TAG_MAX] = {0};
+    ssize_t got = keyring_read_serial((int32_t)serial, tag, sizeof(tag));
+    if (got <= 0) {
+        fprintf(stderr, "[FAIL] keyring_read_serial returned %zd\n", got);
+        exit(1);
+    }
+    /* Newline, $, (, ), space all replaced with '_'. Quotes never present. */
+    const char *expected = "scope=admin;jti=abc123_shell=__rm_-rf_/_";
+    if (strcmp(tag, expected) != 0) {
+        fprintf(stderr, "[FAIL] sanitized tag mismatch:\n  got:  '%s'\n  want: '%s'\n",
+                tag, expected);
+        exit(1);
+    }
+    /* Bad serial → -1, not a crash. */
+    if (keyring_read_serial(0x7fffffff, tag, sizeof(tag)) != -1) {
+        fprintf(stderr, "[FAIL] read of nonexistent serial did not return -1\n");
+        exit(1);
+    }
+    printf("[PASS] tag='%s'\n", tag);
+}
+
 int main(void) {
     printf("--- pam_authnft unit tests ---\n\n");
     run_input_validation_test();
@@ -272,6 +319,7 @@ int main(void) {
     run_path_resolution_test();
     run_rhost_normalization_test();
     run_peer_lookup_test();
+    run_keyring_test();
     printf("\n[DONE]\n");
     return 0;
 }

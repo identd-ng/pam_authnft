@@ -29,6 +29,7 @@
 #define UNIT_BUF_SIZE 128
 #define MAX_USER_LEN 32
 #define IP_STR_MAX   64   /* INET6_ADDRSTRLEN (46) + headroom */
+#define CLAIMS_TAG_MAX 192 /* sanitized payload length cap */
 
 /*
  * Session data persisted via pam_set_data("authnft_cg_id", ...).
@@ -39,6 +40,7 @@
 typedef struct {
     uint64_t cg_id;
     char     remote_ip[IP_STR_MAX];
+    char     claims_tag[CLAIMS_TAG_MAX];  /* "" if no keyring source configured */
 } authnft_session_t;
 
 /*
@@ -49,7 +51,7 @@ typedef struct {
  * v4/v6 map selected by the address family.
  */
 int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
-                      const char *remote_ip);
+                      const char *remote_ip, const char *claims_tag);
 
 /*
  * nft_handler_cleanup:
@@ -88,6 +90,29 @@ int util_is_valid_username(const char *user);
  * and stat(2) on /sys/fs/cgroup/<path>.
  */
 int util_get_cgroup_id(pid_t pid, uint64_t *cg_id);
+
+/*
+ * keyring_fetch_tag:
+ * Reads a kernel-keyring entry whose serial number is supplied as the value
+ * of PAM env var `env_var`. The payload is sanitized to a printable ASCII
+ * subset and copied into out[out_sz] (NUL-terminated, truncated if longer
+ * than CLAIMS_TAG_MAX). Returns 1 on success, 0 if env var is absent,
+ * malformed, names a missing/inaccessible key, or the payload sanitizes to
+ * an empty string. Does not log on absence; logs LOG_WARNING on retrieval
+ * failure.
+ *
+ * Reads a single key via keyctl(2); no other syscalls.
+ */
+int keyring_fetch_tag(pam_handle_t *pamh, const char *env_var,
+                      char *out, size_t out_sz);
+
+/*
+ * keyring_read_serial:
+ * Internal helper exposed for unit testing. Reads `serial` from the kernel
+ * keyring and writes a sanitized payload to out[out_sz]. Returns the
+ * sanitized length, or -1 on error.
+ */
+ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz);
 
 /*
  * peer_lookup_tcp:

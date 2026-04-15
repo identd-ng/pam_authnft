@@ -83,6 +83,9 @@ int sandbox_apply(pam_handle_t *pamh) {
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(timerfd_settime), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(prlimit64), 0);
 
+    /* Kernel keyring — claims_env=NAME path reads one key via keyctl(2). */
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(keyctl), 0);
+
     /* Process */
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(getpid), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(getrandom), 0);

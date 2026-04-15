@@ -14,7 +14,7 @@
 #include <string.h>
 
 int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
-                      const char *remote_ip) {
+                      const char *remote_ip, const char *claims_tag) {
     struct nft_ctx *ctx;
     char cmd[CMD_BUF_SIZE];
     char user_conf_path[256];
@@ -90,6 +90,13 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
      * fragment can reference it. session_map_cg exists so that fragments can
      * still gate by cgroup when PAM_RHOST is absent or unparseable.
      */
+    /* claims_tag is already sanitized by keyring_fetch_tag to a quote-free,
+     * control-free subset; embed it verbatim inside the nft comment. */
+    char tag_part[CLAIMS_TAG_MAX + 8] = "";
+    if (claims_tag && claims_tag[0]) {
+        snprintf(tag_part, sizeof(tag_part), " [%s]", claims_tag);
+    }
+
     if (cg_only) {
         result = snprintf(cmd, sizeof(cmd),
                   "add table inet %s\n"
@@ -97,9 +104,9 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                   "add set inet %s " SET_V6 " { typeof meta cgroup . ip6 saddr; flags timeout; }\n"
                   "add set inet %s " SET_CG " { typeof meta cgroup; flags timeout; }\n"
                   "add chain inet %s filter { type filter hook input priority filter - 1; policy accept; }\n"
-                  "add element inet %s %s { %llu timeout 1d comment \"%s (PID:%d)\" }",
+                  "add element inet %s %s { %llu timeout 1d comment \"%s (PID:%d)%s\" }",
                   TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME,
-                  TABLE_NAME, set_name, (unsigned long long)cg_id, user, getpid());
+                  TABLE_NAME, set_name, (unsigned long long)cg_id, user, getpid(), tag_part);
     } else {
         result = snprintf(cmd, sizeof(cmd),
                   "add table inet %s\n"
@@ -107,9 +114,9 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                   "add set inet %s " SET_V6 " { typeof meta cgroup . ip6 saddr; flags timeout; }\n"
                   "add set inet %s " SET_CG " { typeof meta cgroup; flags timeout; }\n"
                   "add chain inet %s filter { type filter hook input priority filter - 1; policy accept; }\n"
-                  "add element inet %s %s { %llu . %s timeout 1d comment \"%s (PID:%d)\" }",
+                  "add element inet %s %s { %llu . %s timeout 1d comment \"%s (PID:%d)%s\" }",
                   TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME, TABLE_NAME,
-                  TABLE_NAME, set_name, (unsigned long long)cg_id, remote_ip, user, getpid());
+                  TABLE_NAME, set_name, (unsigned long long)cg_id, remote_ip, user, getpid(), tag_part);
     }
 
     if (result < 0 || (size_t)result >= sizeof(cmd)) {
