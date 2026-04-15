@@ -90,6 +90,19 @@ int util_is_valid_username(const char *user);
 int util_get_cgroup_id(pid_t pid, uint64_t *cg_id);
 
 /*
+ * peer_lookup_tcp:
+ * Derives the remote IP of an ESTABLISHED TCP socket owned by `pid` by
+ * issuing a SOCK_DIAG_BY_FAMILY query over NETLINK_SOCK_DIAG and matching
+ * returned inodes against socket inodes walked from /proc/<pid>/fd/.
+ * Writes a canonical IP literal (inet_ntop form) into out[out_sz].
+ * Returns 1 on success, 0 on any failure (no TCP socket, netlink denied,
+ * multiple ambiguous sockets, buffer too small). Uses only syscalls in
+ * the existing seccomp allowlist; safe to call post-sandbox as well but
+ * currently invoked pre-sandbox in lockstep with PAM_RHOST parsing.
+ */
+int peer_lookup_tcp(pid_t pid, char *out, size_t out_sz);
+
+/*
  * util_normalize_ip:
  * Validates an IP literal and writes a canonical form to out[out_sz].
  * Accepts IPv4, IPv6, and IPv6 link-local with a zone suffix ("%zone");

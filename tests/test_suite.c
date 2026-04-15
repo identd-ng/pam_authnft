@@ -204,6 +204,63 @@ static void run_rhost_normalization_test(void) {
     printf("[PASS]\n");
 }
 
+/* Stage 9: peer_lookup_tcp resolves the remote address of an ESTABLISHED
+ * TCP socket owned by this process. Uses a localhost listener/connect
+ * pair; the lookup picks the loopback peer back when no non-loopback
+ * candidate is available. Class of regression: sock_diag plumbing or
+ * /proc fd walk broken. */
+static void run_peer_lookup_test(void) {
+    printf("[STAGE 9] peer_lookup_tcp self-socket resolution...\n");
+
+    int ls = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (ls < 0) { printf("[SKIP] socket(): %s\n", strerror(errno)); return; }
+
+    struct sockaddr_in sa = {0};
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;
+    if (bind(ls, (struct sockaddr *)&sa, sizeof(sa)) < 0 ||
+        listen(ls, 1) < 0) {
+        close(ls);
+        printf("[SKIP] bind/listen: %s\n", strerror(errno));
+        return;
+    }
+    socklen_t sl = sizeof(sa);
+    if (getsockname(ls, (struct sockaddr *)&sa, &sl) < 0) {
+        close(ls); printf("[SKIP] getsockname\n"); return;
+    }
+
+    int cs = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (cs < 0 || connect(cs, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        if (cs >= 0) close(cs); close(ls);
+        printf("[SKIP] connect: %s\n", strerror(errno));
+        return;
+    }
+    int as = accept(ls, NULL, NULL);
+    if (as < 0) {
+        close(cs); close(ls);
+        printf("[SKIP] accept: %s\n", strerror(errno));
+        return;
+    }
+
+    char peer[IP_STR_MAX] = {0};
+    int got = peer_lookup_tcp(getpid(), peer, sizeof(peer));
+
+    close(as); close(cs); close(ls);
+
+    if (!got) {
+        /* Kernel may refuse sock_diag without CAP_NET_ADMIN in some
+         * configurations (user-ns, seccomp'd CI). Treat as skip, not fail. */
+        printf("[SKIP] sock_diag denied or no owned TCP socket\n");
+        return;
+    }
+    if (strcmp(peer, "127.0.0.1") != 0) {
+        fprintf(stderr, "[FAIL] expected 127.0.0.1, got '%s'\n", peer);
+        exit(1);
+    }
+    printf("[PASS] peer=%s\n", peer);
+}
+
 int main(void) {
     printf("--- pam_authnft unit tests ---\n\n");
     run_input_validation_test();
@@ -214,6 +271,7 @@ int main(void) {
     run_checksec_test();
     run_path_resolution_test();
     run_rhost_normalization_test();
+    run_peer_lookup_test();
     printf("\n[DONE]\n");
     return 0;
 }

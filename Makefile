@@ -33,6 +33,7 @@ OBJ_DIR  = obj
 OBJS = $(OBJ_DIR)/bus_handler.o \
        $(OBJ_DIR)/nft_handler.o \
        $(OBJ_DIR)/pam_entry.o   \
+       $(OBJ_DIR)/peer_lookup.o \
        $(OBJ_DIR)/sandbox.o
 
 all: $(TARGET)

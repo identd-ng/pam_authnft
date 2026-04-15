@@ -8,7 +8,7 @@ pam_authnft - PAM session module that binds nftables rules to authenticated sess
 
 # SYNOPSIS
 
-**pam_authnft.so** [*rhost_policy=strict|lax*] [*AUTHNFT_NO_SANDBOX=1*]
+**pam_authnft.so** [*rhost_policy=strict|lax|kernel*] [*AUTHNFT_NO_SANDBOX=1*]
 
 # DESCRIPTION
 
@@ -35,6 +35,19 @@ The module exports only **pam_sm_open_session** and
 **rhost_policy=strict**
 :   Restore the pre-0.2 behaviour: a valid IP literal in *PAM_RHOST* is
     required; the session is denied with **PAM_SESSION_ERR** otherwise.
+
+**rhost_policy=kernel**
+:   Derive the peer IP from the session process's own ESTABLISHED TCP
+    socket via **NETLINK_SOCK_DIAG** (see **ss**(8)). The
+    kernel-reported address is authoritative and cannot be spoofed by
+    a misconfigured or hostile PAM caller. If the kernel lookup
+    succeeds and the value differs from a parseable *PAM_RHOST*, the
+    module logs a **LOG_WARNING** of the form
+    *"PAM_RHOST/kernel peer divergence: app='X' kernel='Y' — trusting
+    kernel"*. Common causes: sshd behind a TCP load balancer (PROXY
+    protocol not terminated) or **UseDNS yes**. If the kernel lookup
+    fails (no ESTABLISHED TCP socket on the session PID, netlink denied),
+    the module falls through to **rhost_policy=lax** semantics.
 
 **AUTHNFT_NO_SANDBOX=1**
 :   Disable the seccomp-BPF sandbox. Accepted as a module argument in the

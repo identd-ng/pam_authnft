@@ -88,29 +88,59 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     /*
      * PAM_RHOST handling. sshd with `UseDNS yes` writes a hostname here,
      * not an IP; historically that tripped inet_pton and denied login.
-     * Default policy (lax): normalize if possible, else fall through to
-     * the cgroup-only set so session identity is still enforced.
-     * Strict policy (rhost_policy=strict): preserve the historical deny.
+     * Policies:
+     *   lax (default) — normalize if possible, else cg-only fallback.
+     *   strict        — deny on any non-IP PAM_RHOST.
+     *   kernel        — prefer the sock_diag-derived peer over PAM_RHOST;
+     *                   log a warning on divergence; fall back to lax
+     *                   semantics if the kernel lookup fails.
      */
-    int strict_rhost = 0;
+    int strict_rhost = 0, kernel_rhost = 0;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "rhost_policy=strict") == 0) strict_rhost = 1;
+        else if (strcmp(argv[i], "rhost_policy=kernel") == 0) kernel_rhost = 1;
     }
 
-    if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) != PAM_SUCCESS || !rhost) {
-        DEBUG_PRINT("PAM: PAM_RHOST not set");
-        if (strict_rhost) return PAM_SESSION_ERR;
-        /* norm_ip stays empty -> cg-only path */
-    } else if (!util_normalize_ip(rhost, norm_ip, sizeof(norm_ip))) {
-        DEBUG_PRINT("PAM: unparseable PAM_RHOST: %s", rhost);
-        if (strict_rhost) {
-            pam_syslog(pamh, LOG_ERR,
-                       "authnft: PAM_RHOST '%s' not an IP literal (strict policy)", rhost);
-            return PAM_SESSION_ERR;
+    int rhost_parsed = 0;
+    if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) == PAM_SUCCESS && rhost) {
+        rhost_parsed = util_normalize_ip(rhost, norm_ip, sizeof(norm_ip));
+    }
+
+    if (kernel_rhost) {
+        char kern_ip[IP_STR_MAX] = {0};
+        if (peer_lookup_tcp(session_pid, kern_ip, sizeof(kern_ip))) {
+            if (rhost_parsed && strcmp(kern_ip, norm_ip) != 0) {
+                pam_syslog(pamh, LOG_WARNING,
+                           "authnft: PAM_RHOST/kernel peer divergence: "
+                           "app='%s' kernel='%s' — trusting kernel",
+                           norm_ip, kern_ip);
+            }
+            memcpy(norm_ip, kern_ip, sizeof(norm_ip));
+            rhost_parsed = 1;
+        } else {
+            pam_syslog(pamh, LOG_INFO,
+                       "authnft: kernel peer lookup failed for pid %d, "
+                       "falling back to PAM_RHOST", session_pid);
+            /* rhost_parsed retains whatever util_normalize_ip returned */
         }
-        pam_syslog(pamh, LOG_INFO,
-                   "authnft: PAM_RHOST '%s' not an IP literal, binding cgroup only",
-                   rhost);
+    }
+
+    if (!rhost_parsed) {
+        if (rhost) {
+            DEBUG_PRINT("PAM: unparseable PAM_RHOST: %s", rhost);
+            if (strict_rhost) {
+                pam_syslog(pamh, LOG_ERR,
+                           "authnft: PAM_RHOST '%s' not an IP literal (strict policy)",
+                           rhost);
+                return PAM_SESSION_ERR;
+            }
+            pam_syslog(pamh, LOG_INFO,
+                       "authnft: PAM_RHOST '%s' not an IP literal, binding cgroup only",
+                       rhost);
+        } else {
+            DEBUG_PRINT("PAM: PAM_RHOST not set");
+            if (strict_rhost) return PAM_SESSION_ERR;
+        }
         norm_ip[0] = '\0';
     }
 
