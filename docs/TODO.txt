@@ -8,36 +8,78 @@ Near-term
     dependency rather than a hard install-time one; manpage is
     referenced throughout docs/ARCHITECTURE.txt, docs/INTEGRATIONS.txt,
     and README.md)
-[ ] Dependabot + CodeQL rollout validation
-[x] cppcheck workflow
-[x] ASan/UBSan build target for CI
-[x] GCC + Clang build matrix in CI
-[x] Coverity Scan weekly cron
-[x] Codecov coverage upload
-[x] OpenSSF Scorecard
-[ ] CIFuzz / OSS-Fuzz integration — write libFuzzer harness
-    (starting with util_is_valid_username and nft rule parsing),
-    apply for OSS-Fuzz onboarding, wire in the CIFuzz action for
-    per-PR short fuzz runs
-[ ] Integration test for IPv6 path (currently only v4 is exercised)
-[ ] Periodically re-run `make trace` on kernel/glibc upgrades to catch syscall drift
+[x] cppcheck workflow (.github/workflows/cppcheck.yml; `make` flags
+    mirrored in contrib-style local invocation)
+[x] ASan / UBSan build target for CI (.github/workflows/sanitizers.yml;
+    build-only, not test-run, because the seccomp sandbox + fork-exec
+    scaffold tangles with ASan interceptors under CI)
+[x] GCC + Clang build matrix in CI (.github/workflows/build.yml)
+[x] Coverity Scan weekly cron (.github/workflows/coverity.yml)
+[x] OpenSSF Best Practices badge (project 12496) — replaced the earlier
+    Scorecard approach; badge in README.md
+[ ] Dependabot + CodeQL rollout validation — both are live; "validation"
+    here means periodically confirming the alert streams are actionable,
+    not one-time setup. Soft-ongoing; revisit on significant config
+    changes.
+[ ] CIFuzz / OSS-Fuzz integration — write libFuzzer harnesses
+    (starting with util_is_valid_username and nft rule parsing), apply
+    for OSS-Fuzz onboarding, wire in the CIFuzz action for per-PR
+    short fuzz runs.
+[ ] Integration test for IPv6 path — every integration stage currently
+    uses rhost=127.0.0.1. Add an IPv6-rhost variant of 10.2 / 10.6
+    targeting session_map_ipv6.
+[ ] Periodically re-run `make trace` on kernel / glibc upgrades to
+    catch syscall drift (standing item, not a one-time task).
 
 Medium-term
 -----------
-[ ] Per-session resource controls documented with concrete examples
-[ ] Fragment linter (wraps libnftables dry-run, runs as pre-commit on /etc/authnft/users)
+[ ] Per-session resource controls documented with concrete examples —
+    README.md now has a "systemd controls" section with
+    IPAddressDeny / SystemCallFilter / CapabilityBoundingSet examples;
+    could be expanded into a dedicated deployment recipe under a new
+    docs/RECIPES.txt.
+[ ] Fragment linter (wraps libnftables dry-run, runs as pre-commit on
+    /etc/authnft/users).
 [x] Structured journald fields (AUTHNFT_EVENT=open/close with shared
-    AUTHNFT_CORRELATION token; see docs/INTEGRATIONS.txt §6.2)
-[ ] Optional audit subsystem hook on fragment rejection
-[ ] Pluggable fragment sources (not just /etc/authnft/users/<name>)
+    AUTHNFT_CORRELATION token; see docs/INTEGRATIONS.txt §6.2).
+[x] Session-identity files (/run/authnft/sessions/<cg_id>.json with
+    versioned JSON schema; see docs/INTEGRATIONS.txt §5.6).
+[x] Multi-fragment composition — documented; nftables `include`
+    resolves transitively so no code change was needed (see
+    docs/INTEGRATIONS.txt §4.6; integration test 10.8).
+[ ] Optional audit subsystem hook on fragment rejection — currently
+    logged via pam_syslog only. Consider audit(7) AUDIT_USER_ERR.
+[ ] Pluggable fragment sources (not just /etc/authnft/users/<name>) —
+    e.g., a fragment-generator socket, /etc/authnft/users.d/ overlays,
+    or policy-engine fetch with atomic rename on disk.
 
-Deferred
---------
-[ ] Cgroupv1/hybrid support — not planned; document as unsupported
-[ ] Non-systemd init — not planned
-[ ] Shipping a default fragment set — administrator responsibility
+Deferred (not planned unless a concrete use case surfaces)
+----------------------------------------------------------
+[x] cgroupv2-only support documented in README and
+    docs/ARCHITECTURE.txt "Known limits". cgroupv1 / hybrid support is
+    not planned.
+[x] systemd dependency documented as hard in README and
+    docs/ARCHITECTURE.txt. Non-systemd init support is not planned.
+[ ] Shipping a default fragment set — examples/examples_generator.sh
+    provides port-restricted / masquerade / time-limited variants as a
+    starting point; shipping a distro-wide default is administrator
+    responsibility.
 
 Upstream / ecosystem
 --------------------
-[ ] Package for Arch (AUR) and Debian
-[ ] Submit to distro PAM module lists once past alpha
+[ ] Package for Arch (AUR) and Debian / Fedora COPR / NixOS overlay /
+    Gentoo ebuild.
+[ ] Submit to distro PAM module lists once past alpha.
+[ ] Integration examples for common producer projects (identity
+    brokers, AAA stacks, OIDC+PAM bridges) using the claims_env and
+    AUTHNFT_CORRELATION channels. Candidate: pam_authnft ↔ prmana
+    reference integration note.
+
+Retired
+-------
+- Codecov upload — removed as the workflow went unused; coverage is
+  now surfaced via sanitizer / cppcheck signal rather than a central
+  badge. Dropped in commit 1257e0f.
+- OpenSSF Scorecard — replaced with OpenSSF Best Practices (project
+  12496) in commit 2c6eb73. Scorecard stale-alert cleanup completed
+  via code-scanning configuration deletion.
