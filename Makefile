@@ -101,26 +101,65 @@ test-integration: $(TEST_BIN)
 	    ./$(TEST_BIN)
 	@sudo chown -R $$(id -u):$$(id -g) . 2>/dev/null; true
 
-# Containerised unit-test run. Builds and runs `make test` inside a
-# Fedora-based container with CAP_NET_ADMIN, so stages that would
-# otherwise SKIP (4 and 7, both of which require CAP_NET_ADMIN) run
-# against a real kernel nftables context. Works on any host with
-# podman or docker (Fedora, Arch, Debian, Ubuntu, RHEL, macOS via
-# podman-machine). Does NOT require host sudo.
+# Containerised workflows. Every test surface the project ships runs
+# inside a booted-systemd container on any host with podman or docker
+# — no sudo required, no host state mutation.
 #
-# Does NOT cover the pamtester end-to-end flow (integration
-# 10.1–10.7). That path needs systemd as PID 1 to service
-# StartTransientUnit over sd-bus, and is run on a real host via
-# `sudo make test-integration`.
-test-container:
-	@command -v podman >/dev/null || { echo "podman not installed"; exit 1; }
-	podman build -t pam_authnft-test -f Containerfile .
+# The container's PID 1 is systemd; a oneshot unit (authnft-workflow)
+# reads /shared/workflow, executes the corresponding make goals,
+# writes the exit code to /shared/exit, and halts the container.
+# The host-side Makefile recipe reads the exit code back.
+
+CONTAINER_IMG = pam_authnft-test
+CONTAINER_BUILD = @command -v podman >/dev/null || { echo "podman not installed"; exit 1; } \
+                  ; podman build -t $(CONTAINER_IMG) -f Containerfile . >/dev/null
+
+# Common podman invocation. Callers set RESULT_DIR to a host path
+# that will be bind-mounted to /shared, and populate
+# $(RESULT_DIR)/workflow with the workflow name before calling.
+define RUN_CONTAINER
 	podman run --rm \
+	    --systemd=always \
 	    --cap-add=NET_ADMIN \
+	    --cap-add=SYS_ADMIN \
 	    --security-opt label=disable \
 	    --security-opt seccomp=unconfined \
 	    -v $(CURDIR):/src:ro,Z \
-	    pam_authnft-test
+	    -v $(RESULT_DIR):/shared:Z \
+	    $(CONTAINER_IMG) >/dev/null
+	@echo "=== workflow output ==="
+	@cat $(RESULT_DIR)/log 2>/dev/null || echo "(no log captured)"
+	@EC=$$(cat $(RESULT_DIR)/exit 2>/dev/null || echo 1); \
+	 echo "=== container exit: $$EC ==="; \
+	 exit $$EC
+endef
+
+# Unit tests inside the container (`make test` — 10 stages, all with
+# CAP_NET_ADMIN so no stages SKIP on that account).
+test-container: RESULT_DIR = $(CURDIR)/.container-result
+test-container:
+	$(CONTAINER_BUILD)
+	@mkdir -p $(RESULT_DIR) && echo unit > $(RESULT_DIR)/workflow
+	$(RUN_CONTAINER)
+
+# Full pamtester integration flow inside the container. systemd
+# is running as PID 1, so StartTransientUnit over sd-bus works.
+# This replaces `sudo make test-integration` as the default
+# integration-test path.
+test-integration-container: RESULT_DIR = $(CURDIR)/.container-result
+test-integration-container:
+	$(CONTAINER_BUILD)
+	@mkdir -p $(RESULT_DIR) && echo integration > $(RESULT_DIR)/workflow
+	$(RUN_CONTAINER)
+
+# Seccomp allowlist trace inside the container. Produces
+# trace.log and trace-claims.log, which are copied out to
+# $(RESULT_DIR). Replaces `sudo make trace` as the default path.
+trace-container: RESULT_DIR = $(CURDIR)/.container-result
+trace-container:
+	$(CONTAINER_BUILD)
+	@mkdir -p $(RESULT_DIR) && echo trace > $(RESULT_DIR)/workflow
+	$(RUN_CONTAINER)
 
 install: $(TARGET)
 	sudo mkdir -p /etc/authnft/users
@@ -144,7 +183,7 @@ install-man: man/pam_authnft.8
 	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8
+	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -152,4 +191,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean test test-symbols test-integration test-container trace trace-features distclean install uninstall man install-man
+.PHONY: all debug clean test test-symbols test-integration test-container \
+        test-integration-container trace trace-container trace-features \
+        distclean install uninstall man install-man

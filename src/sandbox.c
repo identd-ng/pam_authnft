@@ -89,6 +89,13 @@ int sandbox_apply(pam_handle_t *pamh) {
     /* Process */
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(getpid), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(getrandom), 0);
+    /* Credential queries by libc/libsystemd — observed on Fedora's glibc
+     * (not Arch's) during `make trace-container`. Same class as getpid. */
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(getuid), 0);
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(geteuid), 0);
+    /* Filesystem metadata query — libnftables or libsystemd on Fedora.
+     * fstatfs is already allowlisted above; statfs is its path-based twin. */
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(statfs), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(rt_sigprocmask), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(arch_prctl), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(exit_group), 0);

@@ -6,6 +6,7 @@ rules.tmp
 trace.log
 trace-claims.log
 trace-features.log
+.container-result/
 
 # Editor and IDE files
 .vscode/

@@ -135,17 +135,20 @@ Tests
   ten-stage unit suite in `tests/test_suite.c`. Stages 4 and 7 skip
   gracefully without `CAP_NET_ADMIN`; stage 2 skips under
   `AUTHNFT_AUDIT_MODE=1` because of a seccomp/valgrind conflict.
-- `make test-integration` runs `tests/integration_test.sh` under root,
-  then re-runs the unit suite under valgrind. The integration harness
-  creates and removes its own `authnft-test` user and `authnft` group;
-  override with `AUTHNFT_TEST_USER`.
-- `make test-integration-container` runs the same integration flow
-  inside a throwaway Arch container so /etc/passwd, /etc/pam.d,
-  nftables state, and systemd units on the host are never touched.
-  Requires `podman` with a systemd-capable configuration (default
-  on recent releases). No host sudo required. Preferred over
-  `make test-integration` when working on a host that cannot tolerate
-  transient user/group/nft state — e.g. a developer's laptop.
+- **Container workflows are the recommended path.** Every test
+  surface runs inside a booted-systemd Fedora container:
+    make test-container              # unit suite, 10 stages, CAP_NET_ADMIN
+    make test-integration-container  # pamtester end-to-end + valgrind
+    make trace-container             # seccomp allowlist trace
+  No host sudo required; no /etc/passwd, /etc/pam.d, nftables, or
+  systemd mutation on the host. Requires `podman` only. Works on
+  any host distro (Fedora, Arch, Debian, Ubuntu, RHEL, macOS via
+  podman-machine).
+- `make test-integration` and `make trace` remain available for
+  developers who want to run the sudo-on-host path directly. They
+  mutate host state (create transient users, /etc/pam.d entry, nft
+  table) and clean up via trap. Use them when you need to inspect
+  state mid-run or when no container runtime is available.
 - Run `sudo make distclean` to tear down a leftover `inet authnft`
   table and the throwaway `/etc/pam.d/authnft_test` config.
 - New behaviour does not require new tests — add one only if the
