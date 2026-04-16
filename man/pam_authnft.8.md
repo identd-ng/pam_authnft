@@ -88,11 +88,11 @@ On session open, the module:
 6. Resolves the scope's cgroupv2 inode via **sd_pid_get_cgroup**(3)
    and **stat**(2) on */sys/fs/cgroup/\<path\>* (fallback
    */sys/fs/cgroup/unified/\<path\>*).
-7. Persists session state (cgroup inode + normalized remote IP) in
-   PAM data under the key *authnft_cg_id* so **pam_sm_close_session**
-   can delete the exact element inserted from the correct set. The
-   key name is retained for compatibility; the stored value shape is
-   an internal ABI.
+7. Persists session state (cgroup inode + normalized remote IP +
+   optional sanitized claims tag) in PAM data under the key
+   *authnft_cg_id* so **pam_sm_close_session** can delete the exact
+   element inserted from the correct set. The key name is retained
+   for compatibility; the stored value shape is an internal ABI.
 8. Verifies the user is a member of the **authnft** group. Non-members
    pass through with **PAM_SUCCESS**.
 9. Validates the fragment at */etc/authnft/users/\<user\>*: it must

@@ -19,6 +19,9 @@ In scope:
   timeout
 - Misuse of the `rhost_policy=kernel` sock_diag path: incorrect peer-address
   resolution that binds a session element to the wrong source IP
+- Misuse of the `claims_env` keyring-payload path: command injection via
+  an insufficiently sanitized tag, read amplification that bypasses the
+  `CLAIMS_TAG_MAX` bound, or privilege escalation via keyring interactions
 - Cleanup or resource-exhaustion issues triggerable by an unauthenticated
   remote party via repeated session churn
 

@@ -77,6 +77,7 @@ persist across sessions.
 | `rhost_policy=lax` | ✓ | Use PAM_RHOST if it parses as an IP, else fall back to `session_map_cg` |
 | `rhost_policy=strict` |  | Deny session when PAM_RHOST is not a parseable IP literal (pre-0.2 behaviour) |
 | `rhost_policy=kernel` |  | Derive peer IP from the session process's own ESTABLISHED TCP socket via `NETLINK_SOCK_DIAG` (see `ss(8)`). Logs a warning on divergence with PAM_RHOST. Falls through to `lax` on lookup failure |
+| `claims_env=NAME` |  | Read PAM env var `NAME` for a kernel-keyring serial; embed the sanitized keyed payload in the nftables element comment. See [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §2 |
 | `AUTHNFT_NO_SANDBOX=1` |  | Disable the seccomp sandbox. Debugging only |
 
 ## Requirements
@@ -180,6 +181,14 @@ table inet authnft {
 }
 ```
 
+With `claims_env=NAME` set and a valid keyring entry produced by an earlier
+module in the stack, the element comment is extended with the sanitized
+payload:
+
+```
+elements = { 27711 . 127.0.0.1 timeout 1d comment "alice (PID:1127936) [audit-session:7f3e9a]" }
+```
+
 `27711` is the cgroupv2 inode of `authnft-authnft-test-1127936.scope`. At packet
 classification time, `meta cgroup` in the kernel matches this inode against the
 socket's originating cgroup — binding the firewall rule to the session without
@@ -253,6 +262,7 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 7 | `nft_handler_setup` loads a root-owned fragment end-to-end |
 | 8 | `util_normalize_ip` accepts v4/v6 literals, strips IPv6 zone suffix, rejects hostnames and junk |
 | 9 | `peer_lookup_tcp` resolves the remote address of a localhost TCP pair via `NETLINK_SOCK_DIAG` |
+| 10 | Kernel-keyring tag round-trip: `add_key` → `keyring_read_serial` with full payload sanitization |
 | — | Integration: group member denied on missing fragment; allowed with valid fragment; root bypasses |
 | — | Integration: no memory errors or leaks under Valgrind memcheck |
 

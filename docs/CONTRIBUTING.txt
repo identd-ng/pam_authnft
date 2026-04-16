@@ -51,12 +51,12 @@ Invariants to preserve
    → `util_get_cgroup_id` → `pam_set_data` → `nft_handler_setup`.
 
 3. Session state is persisted via `pam_set_data` keyed `"authnft_cg_id"`.
-   The stored value is `authnft_session_t` (cg_id + normalized remote_ip);
-   the key name predates the struct and is kept for compatibility.
-   `close_session` reads the struct back to delete the exact element
-   `open_session` inserted, including which set it went into. Do not
-   re-resolve the cgroup from the PID at close — the transient scope may
-   already be gone.
+   The stored value is `authnft_session_t` (cg_id + normalized remote_ip
+   + optional claims_tag); the key name predates the struct and is kept
+   for compatibility. `close_session` reads the struct back to delete the
+   exact element `open_session` inserted, including which set it went
+   into. Do not re-resolve the cgroup from the PID at close — the
+   transient scope may already be gone.
 
 4. Error asymmetry is intentional: open_session is strict, close_session
    is best-effort. Cleanup failures log a warning and return
@@ -103,6 +103,13 @@ add the syscall here or the module is killed with SIGSYS at runtime.
 Default action is `SCMP_ACT_KILL`. `PR_SET_NO_NEW_PRIVS` is set before
 `seccomp_load` — do not reorder.
 
+Syscalls for argument-gated features (e.g., `claims_env=`,
+`rhost_policy=kernel`) enter the allowlist unconditionally: the sandbox
+is loaded once, before argument-driven code paths diverge, and there is
+no mechanism to re-evaluate filters mid-session. Enabling such a
+feature therefore slightly broadens the allowlist for every session,
+not only sessions that exercise the feature.
+
 
 Style
 -----
@@ -125,7 +132,7 @@ Tests
 -----
 
 - `make test` runs the symbol-whitelist check (stage 0) followed by the
-  nine-stage unit suite in `tests/test_suite.c`. Stages 4 and 7 skip
+  ten-stage unit suite in `tests/test_suite.c`. Stages 4 and 7 skip
   gracefully without `CAP_NET_ADMIN`; stage 2 skips under
   `AUTHNFT_AUDIT_MODE=1` because of a seccomp/valgrind conflict.
 - `make test-integration` runs `tests/integration_test.sh` under root,
