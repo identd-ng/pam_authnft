@@ -7,3 +7,6 @@ trace.log
 
 # Editor and IDE files
 .vscode/
+
+# Maintainer-local helpers
+docs/DOC_CHECKLIST.txt

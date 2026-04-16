@@ -14,8 +14,11 @@ In scope:
   or syscalls outside the seccomp allowlist
 - Username, `PAM_RHOST`, or fragment-path handling that permits injection
   into nftables commands, D-Bus method calls, or filesystem operations
-- Leaks of `{ cg_id . src_ip }` set elements that outlive the session beyond
-  the 24-hour safety-net timeout
+- Leaks of session elements (in `session_map_ipv4`, `session_map_ipv6`, or
+  `session_map_cg`) that outlive the session beyond the 24-hour safety-net
+  timeout
+- Misuse of the `rhost_policy=kernel` sock_diag path: incorrect peer-address
+  resolution that binds a session element to the wrong source IP
 - Cleanup or resource-exhaustion issues triggerable by an unauthenticated
   remote party via repeated session churn
 

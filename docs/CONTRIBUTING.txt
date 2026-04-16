@@ -50,10 +50,13 @@ Invariants to preserve
    root bypass → parse `PAM_RHOST` → `sandbox_apply` → `bus_handler_start`
    → `util_get_cgroup_id` → `pam_set_data` → `nft_handler_setup`.
 
-3. `cg_id` is persisted via `pam_set_data` keyed `"authnft_cg_id"` so
-   `close_session` can delete the exact element it inserted. Do not
-   re-resolve the cgroup from the PID at close — the transient scope
-   may already be gone.
+3. Session state is persisted via `pam_set_data` keyed `"authnft_cg_id"`.
+   The stored value is `authnft_session_t` (cg_id + normalized remote_ip);
+   the key name predates the struct and is kept for compatibility.
+   `close_session` reads the struct back to delete the exact element
+   `open_session` inserted, including which set it went into. Do not
+   re-resolve the cgroup from the PID at close — the transient scope may
+   already be gone.
 
 4. Error asymmetry is intentional: open_session is strict, close_session
    is best-effort. Cleanup failures log a warning and return
@@ -71,9 +74,13 @@ Invariants to preserve
    The element is inserted before the fragment so fragment rules can
    reference `@session_map_ipv{4,6}`.
 
-7. Set type is `typeof meta cgroup . ip saddr` (v4) or `ip6 saddr` (v6),
-   with `flags timeout`. The 24-hour element timeout is a safety net,
-   not a primary cleanup mechanism.
+7. Three named sets live in `table inet authnft`:
+       session_map_ipv4   typeof meta cgroup . ip saddr;  flags timeout
+       session_map_ipv6   typeof meta cgroup . ip6 saddr; flags timeout
+       session_map_cg     typeof meta cgroup;             flags timeout
+   A session element goes into exactly one of these, selected by
+   PAM_RHOST normalization and the configured rhost_policy. The 24-hour
+   element timeout is a safety net, not a primary cleanup mechanism.
 
 8. Chain priority is `filter - 1` so pam_authnft runs before the default
    filter chain.
@@ -118,7 +125,7 @@ Tests
 -----
 
 - `make test` runs the symbol-whitelist check (stage 0) followed by the
-  seven-stage unit suite in `tests/test_suite.c`. Stages 4 and 7 skip
+  nine-stage unit suite in `tests/test_suite.c`. Stages 4 and 7 skip
   gracefully without `CAP_NET_ADMIN`; stage 2 skips under
   `AUTHNFT_AUDIT_MODE=1` because of a seccomp/valgrind conflict.
 - `make test-integration` runs `tests/integration_test.sh` under root,

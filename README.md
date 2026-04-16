@@ -50,15 +50,34 @@ changes. The element is atomically deleted at logout.
 
 On session open:
 
-1. Validates `PAM_RHOST` is a valid IP address
-2. Locks the PAM process with a seccomp-BPF allowlist (`SCMP_ACT_KILL` default)
-3. Creates a named transient `.scope` under `authnft.slice` via D-Bus
+1. Normalises `PAM_RHOST`: IPv4/IPv6 literals pass through, IPv6 zone
+   suffixes (`fe80::1%eth0`) are stripped. Hostnames (sshd `UseDNS yes`)
+   and unparseable values are handled per the configured `rhost_policy`
+   (see below).
+2. Locks the PAM process with a seccomp-BPF allowlist (`SCMP_ACT_KILL` default).
+3. Creates a named transient `.scope` under `authnft.slice` via D-Bus.
 4. Reads the scope's cgroupv2 inode via `stat(2)` and stores it in PAM data
-5. Validates and loads the user's root-owned fragment at `/etc/authnft/users/<username>`
-6. Inserts `{ cgroup_id . src_ip }` into `session_map_ipv4` or `session_map_ipv6`
+   alongside the normalised source IP.
+5. Validates and loads the user's root-owned fragment at
+   `/etc/authnft/users/<username>`.
+6. Inserts a session element into one of three named sets:
+   - `session_map_ipv4` — `{ cgroup_id . src_ip }` when PAM_RHOST parsed as IPv4
+   - `session_map_ipv6` — `{ cgroup_id . src_ip }` when PAM_RHOST parsed as IPv6
+   - `session_map_cg`   — `{ cgroup_id }` only, when PAM_RHOST was absent
+     or could not be normalised (default `rhost_policy=lax` behaviour)
 
-On logout, the stored cgroup ID is retrieved from PAM data and the element is
-deleted. The nftables table and sets persist across sessions.
+On logout the stored cgroup ID is retrieved from PAM data and the element is
+deleted from the exact set it was inserted into. The nftables table and sets
+persist across sessions.
+
+### Module arguments
+
+| Argument | Default | Effect |
+|---|---|---|
+| `rhost_policy=lax` | ✓ | Use PAM_RHOST if it parses as an IP, else fall back to `session_map_cg` |
+| `rhost_policy=strict` |  | Deny session when PAM_RHOST is not a parseable IP literal (pre-0.2 behaviour) |
+| `rhost_policy=kernel` |  | Derive peer IP from the session process's own ESTABLISHED TCP socket via `NETLINK_SOCK_DIAG` (see `ss(8)`). Logs a warning on divergence with PAM_RHOST. Falls through to `lax` on lookup failure |
+| `AUTHNFT_NO_SANDBOX=1` |  | Disable the seccomp sandbox. Debugging only |
 
 ## Requirements
 
@@ -149,6 +168,11 @@ table inet authnft {
         flags timeout
     }
 
+    set session_map_cg {
+        typeof meta cgroup
+        flags timeout
+    }
+
     chain filter {
         type filter hook input priority filter - 1; policy accept;
         meta cgroup . ip saddr @session_map_ipv4 accept
@@ -219,6 +243,7 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 
 | # | What is tested |
 |---|----------------|
+| 0 | Exported symbols are exactly `pam_sm_open_session` and `pam_sm_close_session` |
 | 1 | `util_is_valid_username` rejects path traversal and shell metacharacters |
 | 2 | A syscall outside the allowlist triggers SIGSYS |
 | 3 | An allowlisted syscall (`close`) returns normally through the sandbox |
@@ -226,8 +251,10 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 5 | `util_get_cgroup_id` resolves a live PID to its cgroupv2 inode |
 | 6 | Compiled `.so` has full RELRO, canary, PIE, CFI (via `checksec`) |
 | 7 | `nft_handler_setup` loads a root-owned fragment end-to-end |
-| 8 | Group member denied on missing fragment; allowed with valid fragment; root bypasses |
-| 9 | No memory errors or leaks under Valgrind memcheck |
+| 8 | `util_normalize_ip` accepts v4/v6 literals, strips IPv6 zone suffix, rejects hostnames and junk |
+| 9 | `peer_lookup_tcp` resolves the remote address of a localhost TCP pair via `NETLINK_SOCK_DIAG` |
+| — | Integration: group member denied on missing fragment; allowed with valid fragment; root bypasses |
+| — | Integration: no memory errors or leaks under Valgrind memcheck |
 
 ## License
 
