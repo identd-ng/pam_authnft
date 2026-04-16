@@ -128,6 +128,25 @@ ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz);
 int peer_lookup_tcp(pid_t pid, char *out, size_t out_sz);
 
 /*
+ * session_file_write:
+ * Writes /run/authnft/sessions/<cg_id>.json containing session metadata for
+ * out-of-band observers (SIEM, schedulers, monitoring). JSON schema v=1 is
+ * documented in docs/INTEGRATIONS.txt §5.6. Atomic via tempfile + rename.
+ * Returns 0 on success, -1 on any failure. Session establishment does NOT
+ * fail on a write error — the session file is best-effort observability.
+ */
+int session_file_write(pam_handle_t *pamh, const authnft_session_t *sd,
+                       const char *user, int session_pid);
+
+/*
+ * session_file_remove:
+ * Removes /run/authnft/sessions/<cg_id>.json at close_session. Silent on
+ * ENOENT (write may have failed or systemd-tmpfiles may have already reaped
+ * a stale entry). Returns 0 on success or ENOENT, -1 otherwise.
+ */
+int session_file_remove(pam_handle_t *pamh, uint64_t cg_id);
+
+/*
  * util_normalize_ip:
  * Validates an IP literal and writes a canonical form to out[out_sz].
  * Accepts IPv4, IPv6, and IPv6 link-local with a zone suffix ("%zone");

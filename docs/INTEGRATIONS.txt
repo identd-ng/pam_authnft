@@ -354,6 +354,114 @@ Operators MAY create drop-in directories for per-user limits:
 pam_authnft does not generate these. They are outside the module's
 scope; the systemd documentation is authoritative.
 
+5.6 Session-identity files
+
+Status: stable (schema v=1)
+
+pam_authnft writes a per-session JSON file at
+/run/authnft/sessions/<cg_id>.json on open_session, and removes it on
+close_session. The file exposes the same identity data that
+pam_set_data holds internally (§1.4), without requiring a PAM handle
+or privileged access to module source. This is the read-side
+observability contract for SIEM agents, workload schedulers,
+container runtimes, and operator dashboards.
+
+5.6.1 Location and lifecycle
+
+    Directory:  /run/authnft/sessions/    (0755 root:root)
+    File:       /run/authnft/sessions/<cg_id>.json
+    Perms:      0644 root:root
+    Atomicity:  tempfile + rename(2) — readers never see a partial
+                write. Intermediate name is .<cg_id>.tmp.
+    Lifecycle:  written after nft_handler_setup succeeds at open;
+                unlinked by close_session. Orphans from crashed or
+                skipped close paths are reaped by systemd-tmpfiles
+                (MaxAge=7d) per data/authnft.tmpfiles.
+
+5.6.2 Schema
+
+    {
+      "v": 1,
+      "cg_id": 18446744073709551615,
+      "user": "alice",
+      "remote_ip": "2001:db8::1",
+      "fragment": "/etc/authnft/users/alice",
+      "claims_tag": "role=db-reader",
+      "scope_unit": "authnft-alice-4321.scope",
+      "opened_at": "2026-04-16T09:12:17Z"
+    }
+
+Field semantics:
+
+    v           integer, schema version. Currently 1. Additive
+                changes MAY add fields without bumping v; removals or
+                renames bump to v=2 under the §8 rules.
+    cg_id       uint64, cgroupv2 inode. Matches the filename.
+    user        string, PAM_USER. Charset [A-Za-z0-9._-], max 32.
+    remote_ip   string, normalized source IP. "" on the cg-only path
+                (rhost_policy=lax with unparseable PAM_RHOST) or when
+                rhost_policy=kernel failed and fell back.
+    fragment    string, absolute path to the per-user nftables
+                fragment that was candidate for loading. Readers
+                cross-referencing `nft list table inet authnft` can
+                infer whether the fragment was actually applied.
+    claims_tag  string, sanitized keyring payload. "" when claims_env
+                is not configured, the env var is absent, or the
+                payload sanitizes to empty (§2).
+    scope_unit  string, systemd scope unit name (§5.1).
+    opened_at   string, RFC 3339 / ISO 8601 UTC timestamp.
+
+All string fields are ASCII-safe by construction — producer-validated
+upstream, no JSON escaping applied. Readers MAY assume no embedded
+quote or backslash characters in string values.
+
+5.6.3 Reader guarantees
+
+    Readers MAY open the file at any time between the write and the
+    unlink. The file is never absent-but-should-be during that window
+    because the write is atomic.
+
+    Readers MUST tolerate an ENOENT on open — the session may have
+    just closed, or may have failed to create the file (the session
+    itself proceeds regardless of a write failure).
+
+    Readers MUST tolerate additive schema changes — a future field
+    beyond those listed above is not a schema break. Reject only if
+    `v > your_supported_version` and you require strict version
+    matching.
+
+5.6.4 Writer failure modes
+
+pam_authnft logs at LOG_WARNING and continues if any step of the
+write path fails (open, write, rename). The session establishment is
+NOT failed — the file is best-effort observability, not a prerequisite
+for session correctness. Common causes of write failure:
+
+    /run/authnft/sessions/ missing — tmpfiles.d not installed, or
+        systemd-tmpfiles not yet run after install. Operators SHOULD
+        run `systemd-tmpfiles --create /usr/lib/tmpfiles.d/authnft.conf`
+        after install.
+
+    /run full — rare on modern hosts; operators monitoring tmpfs
+        capacity will already alert on this.
+
+    Filesystem mounted read-only — typically a deliberate hardening
+        choice; affected operators should disable the file-writing
+        step by applying a seccomp profile or LSM rule externally.
+
+5.6.5 Security note
+
+The file is world-readable by design: session metadata is not secret
+(cgroup membership is enumerable from /proc; PAM_USER is in `last`,
+`utmp`, and syslog). Restricting readability would not materially
+raise the bar and would prevent unprivileged monitoring agents from
+working without sudo.
+
+Operators concerned about information exposure (e.g., claims_tag
+containing audit correlation tokens) MAY mount `/run/authnft` with
+stricter permissions via a drop-in mount unit; the file write will
+still succeed as root.
+
 
 6. Observability and audit contracts
 ------------------------------------

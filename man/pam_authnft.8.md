@@ -126,6 +126,19 @@ into. Cleanup failures are logged but do not prevent session teardown.
 */usr/lib/security/pam_authnft.so*
 :   The module itself.
 
+*/run/authnft/sessions/\<cg_id\>.json*
+:   Per-session identity file written on open_session and removed on
+    close_session. Mode 0644 root:root, JSON schema documented in
+    **docs/INTEGRATIONS.txt** §5.6. Intended for unprivileged
+    observers (SIEM agents, monitoring daemons, operator consoles)
+    that need to correlate a cgroup inode back to the owning
+    session. The directory is created by
+    */usr/lib/tmpfiles.d/authnft.conf* at boot.
+
+*/usr/lib/tmpfiles.d/authnft.conf*
+:   systemd-tmpfiles(5) snippet that creates */run/authnft/sessions/*
+    and reaps orphaned per-session files older than 7 days.
+
 # ENVIRONMENT
 
 **AUTHNFT_NO_SANDBOX**

@@ -9,6 +9,7 @@ PAM_DIR    = /usr/lib/security
 MAN_DIR    = /usr/share/man/man8
 PANDOC     = pandoc
 TEST_USER  ?= authnft-test
+TMPFILES_DIR = /usr/lib/tmpfiles.d
 CFLAGS     =
 
 LIBS      = libnftables libseccomp libsystemd pam libcap
@@ -30,12 +31,13 @@ TARGET   = pam_authnft.so
 TEST_BIN = authnft_test
 OBJ_DIR  = obj
 
-OBJS = $(OBJ_DIR)/bus_handler.o \
-       $(OBJ_DIR)/keyring.o     \
-       $(OBJ_DIR)/nft_handler.o \
-       $(OBJ_DIR)/pam_entry.o   \
-       $(OBJ_DIR)/peer_lookup.o \
-       $(OBJ_DIR)/sandbox.o
+OBJS = $(OBJ_DIR)/bus_handler.o   \
+       $(OBJ_DIR)/keyring.o       \
+       $(OBJ_DIR)/nft_handler.o   \
+       $(OBJ_DIR)/pam_entry.o     \
+       $(OBJ_DIR)/peer_lookup.o   \
+       $(OBJ_DIR)/sandbox.o       \
+       $(OBJ_DIR)/session_file.o
 
 all: $(TARGET)
 
@@ -161,15 +163,24 @@ trace-container:
 	@mkdir -p $(RESULT_DIR) && echo trace > $(RESULT_DIR)/workflow
 	$(RUN_CONTAINER)
 
-install: $(TARGET)
+install: $(TARGET) install-tmpfiles
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
 	sudo install -m 644 data/authnft.slice /etc/systemd/system/authnft.slice
 	sudo systemctl daemon-reload
 
+# tmpfiles.d snippet creates /run/authnft/sessions/ at boot and reaps
+# stale per-session JSON files older than 7 days. See data/authnft.tmpfiles
+# and docs/INTEGRATIONS.txt §5.6.
+install-tmpfiles:
+	sudo install -d $(TMPFILES_DIR)
+	sudo install -m 644 data/authnft.tmpfiles $(TMPFILES_DIR)/authnft.conf
+	sudo systemd-tmpfiles --create $(TMPFILES_DIR)/authnft.conf
+
 uninstall:
 	sudo rm -f $(PAM_DIR)/$(TARGET)
 	sudo rm -f $(MAN_DIR)/pam_authnft.8.gz
+	sudo rm -f $(TMPFILES_DIR)/authnft.conf
 
 # Manpage — requires pandoc. Builds pam_authnft.8 from man/pam_authnft.8.md.
 man: man/pam_authnft.8
@@ -193,4 +204,4 @@ distclean: clean
 
 .PHONY: all debug clean test test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
-        distclean install uninstall man install-man
+        distclean install install-tmpfiles uninstall man install-man

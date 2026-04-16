@@ -71,6 +71,14 @@ fi
 
 mkdir -p "$RULES_DIR"
 
+# Runtime session-file directory. Normally created at boot by
+# /usr/lib/tmpfiles.d/authnft.conf; test harness creates it on demand so
+# `make test-integration` works even before `sudo make install-tmpfiles`.
+mkdir -p /run/authnft/sessions
+# Wipe any residue from earlier runs — lingering files from invariant-#6
+# close_session no-ops would confuse the session-file lifecycle assertion.
+rm -f /run/authnft/sessions/*.json /run/authnft/sessions/.*.tmp 2>/dev/null || true
+
 # Write a minimal PAM config for testing
 printf "auth     required  pam_permit.so\n" > "$PAM_TEST_CONF"
 printf "account  required  pam_permit.so\n" >> "$PAM_TEST_CONF"
@@ -160,5 +168,45 @@ if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" close_session > /dev
     fail "close_session without prior open did not return PAM_SUCCESS"
 fi
 pass "close_session best-effort semantics preserved"
+
+# 10.9: /run/authnft/sessions/<cg_id>.json session-identity file contract.
+# Verifies that pam_authnft writes a JSON observability file at open_session
+# and removes it at close_session. Permissions, JSON schema fields, and the
+# open/close lifecycle are all checked. See docs/INTEGRATIONS.txt §5.6.
+printf "${YELLOW}10.9: Session identity file (open creates, close removes)${RESET}\n"
+valid_fragment
+rm -f /run/authnft/sessions/*.json /run/authnft/sessions/.*.tmp 2>/dev/null || true
+# Half 1: open in a single handle (separate from the later close so the
+# file is left behind for inspection — close_session in a new handle
+# no-ops per invariant #6 and does not remove the file).
+if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/null 2>&1; then
+    fail "Session file test: open_session failed"
+fi
+SESSION_FILE=$(ls /run/authnft/sessions/*.json 2>/dev/null | head -1)
+if [[ -z "$SESSION_FILE" ]]; then
+    fail "No session file created at open_session under /run/authnft/sessions/"
+fi
+for FIELD in '"v":1' '"cg_id":' "\"user\":\"$TEST_USER\"" \
+             '"remote_ip":"127.0.0.1"' "\"fragment\":\"$RULES_DIR/$TEST_USER\"" \
+             "\"scope_unit\":\"authnft-$TEST_USER-" '"opened_at":"'; do
+    if ! grep -q "$FIELD" "$SESSION_FILE"; then
+        cat "$SESSION_FILE"
+        fail "Session file missing field: $FIELD"
+    fi
+done
+PERMS=$(stat -c '%a %U:%G' "$SESSION_FILE")
+if [[ "$PERMS" != "644 root:root" ]]; then
+    fail "Session file wrong permissions: got '$PERMS', expected '644 root:root'"
+fi
+rm -f "$SESSION_FILE"
+# Half 2: open+close in the SAME handle. close_session must remove the file.
+if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
+        open_session close_session > /dev/null 2>&1; then
+    fail "Session file test: open+close same-handle run failed"
+fi
+if ls /run/authnft/sessions/*.json 2>/dev/null | grep -q .; then
+    fail "Session file persisted after close_session in the same handle"
+fi
+pass "Session file lifecycle: created on open, correct schema and perms, removed on close"
 
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"

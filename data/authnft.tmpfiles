@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# systemd-tmpfiles(5) configuration for pam_authnft.
+#
+# Creates /run/authnft/sessions/ at boot and reaps stale per-session JSON
+# files older than 7 days. See docs/INTEGRATIONS.txt §5.6 for the schema
+# and lifecycle; files are normally removed by close_session, the age-based
+# cleanup is a safety net for orphans from failed close paths.
+#
+# Installed by `make install-tmpfiles` to /usr/lib/tmpfiles.d/authnft.conf.
+
+d /run/authnft           0755 root root -
+d /run/authnft/sessions  0755 root root 7d
