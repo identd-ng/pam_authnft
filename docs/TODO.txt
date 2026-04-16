@@ -3,7 +3,11 @@ pam_authnft TODO
 
 Near-term
 ---------
-[ ] Publish pam_authnft(8) manpage via `make install`
+[x] Publish pam_authnft(8) manpage (installed via `make install-man`,
+    kept separate from `make install` so pandoc stays a soft build-time
+    dependency rather than a hard install-time one; manpage is
+    referenced throughout docs/ARCHITECTURE.txt, docs/INTEGRATIONS.txt,
+    and README.md)
 [ ] Dependabot + CodeQL rollout validation
 [x] cppcheck workflow
 [x] ASan/UBSan build target for CI
