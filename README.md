@@ -70,6 +70,13 @@ On logout the stored cgroup ID is retrieved from PAM data and the element is
 deleted from the exact set it was inserted into. The nftables table and sets
 persist across sessions.
 
+Structured audit events are emitted to the systemd journal at open and close
+with a shared `AUTHNFT_CORRELATION` token — pipe `journalctl -t pam_authnft`
+into any SIEM, or read it locally to correlate session lifecycle. Upstream
+PAM modules MAY seed the correlation token via `pam_putenv` to join
+authentication and session events across log streams. Full field schema in
+[docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §6.2.
+
 ### Module arguments
 
 | Argument | Default | Effect |

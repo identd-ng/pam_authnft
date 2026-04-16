@@ -22,7 +22,8 @@ Medium-term
 -----------
 [ ] Per-session resource controls documented with concrete examples
 [ ] Fragment linter (wraps libnftables dry-run, runs as pre-commit on /etc/authnft/users)
-[ ] Structured journald fields instead of free-form pam_syslog text
+[x] Structured journald fields (AUTHNFT_EVENT=open/close with shared
+    AUTHNFT_CORRELATION token; see docs/INTEGRATIONS.txt §6.2)
 [ ] Optional audit subsystem hook on fragment rejection
 [ ] Pluggable fragment sources (not just /etc/authnft/users/<name>)
 

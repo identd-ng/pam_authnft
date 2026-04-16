@@ -161,4 +161,50 @@ if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" close_session > /dev
 fi
 pass "close_session best-effort semantics preserved"
 
+# 10.10: Structured journald audit events.
+# Verifies pam_authnft emits AUTHNFT_EVENT=open on open_session and
+# AUTHNFT_EVENT=close on close_session, with a consistent
+# AUTHNFT_CORRELATION token joining the two. See docs/INTEGRATIONS.txt §6.4.
+printf "${YELLOW}10.10: Audit events (journald + correlation token)${RESET}\n"
+valid_fragment
+# Mark the journal cursor so we only read events from this test.
+CURSOR=$(journalctl -n 0 --show-cursor 2>&1 | grep -oP 'cursor: \K.*')
+if [[ -z "$CURSOR" ]]; then
+    fail "could not capture journal cursor"
+fi
+# Single-handle open+close so the same session_pid (and correlation) covers
+# both events.
+if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
+        open_session close_session > /dev/null 2>&1; then
+    fail "open+close failed during audit-event test"
+fi
+# Give the journal a moment to flush (sd_journal_send returns before the
+# reader sees the entry under some journald backlog conditions).
+sync
+sleep 1
+OPEN_LINE=$(journalctl --after-cursor="$CURSOR" -t pam_authnft \
+            --output=json --no-pager 2>/dev/null | \
+            grep '"AUTHNFT_EVENT":"open"' | head -1)
+CLOSE_LINE=$(journalctl --after-cursor="$CURSOR" -t pam_authnft \
+             --output=json --no-pager 2>/dev/null | \
+             grep '"AUTHNFT_EVENT":"close"' | head -1)
+[[ -n "$OPEN_LINE"  ]] || fail "no AUTHNFT_EVENT=open entry after open_session"
+[[ -n "$CLOSE_LINE" ]] || fail "no AUTHNFT_EVENT=close entry after close_session"
+for FIELD in '"AUTHNFT_USER":"'"$TEST_USER"'"' \
+             '"AUTHNFT_CG_ID":"' '"AUTHNFT_REMOTE_IP":"127.0.0.1"' \
+             "\"AUTHNFT_FRAGMENT\":\"$RULES_DIR/$TEST_USER\"" \
+             "\"AUTHNFT_SCOPE_UNIT\":\"authnft-$TEST_USER-" \
+             '"AUTHNFT_CORRELATION":"authnft-'; do
+    if ! echo "$OPEN_LINE" | grep -q "$FIELD"; then
+        echo "open event: $OPEN_LINE"
+        fail "open event missing field: $FIELD"
+    fi
+done
+CORR_OPEN=$(echo "$OPEN_LINE"  | grep -oP '"AUTHNFT_CORRELATION":"\K[^"]+')
+CORR_CLOSE=$(echo "$CLOSE_LINE" | grep -oP '"AUTHNFT_CORRELATION":"\K[^"]+')
+if [[ -z "$CORR_OPEN" || "$CORR_OPEN" != "$CORR_CLOSE" ]]; then
+    fail "correlation mismatch: open='$CORR_OPEN' close='$CORR_CLOSE'"
+fi
+pass "Audit events: open + close emitted, shared correlation='$CORR_OPEN'"
+
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"

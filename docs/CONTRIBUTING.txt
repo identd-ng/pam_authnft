@@ -52,11 +52,12 @@ Invariants to preserve
 
 3. Session state is persisted via `pam_set_data` keyed `"authnft_cg_id"`.
    The stored value is `authnft_session_t` (cg_id + normalized remote_ip
-   + optional claims_tag); the key name predates the struct and is kept
-   for compatibility. `close_session` reads the struct back to delete the
-   exact element `open_session` inserted, including which set it went
-   into. Do not re-resolve the cgroup from the PID at close — the
-   transient scope may already be gone.
+   + optional claims_tag + correlation_id); the key name predates the
+   struct and is kept for compatibility. `close_session` reads the
+   struct back to delete the exact element `open_session` inserted
+   (including which set it went into) and to reuse the correlation_id
+   in the close-side audit event. Do not re-resolve the cgroup from
+   the PID at close — the transient scope may already be gone.
 
 4. Error asymmetry is intentional: open_session is strict, close_session
    is best-effort. Cleanup failures log a warning and return
@@ -109,6 +110,12 @@ is loaded once, before argument-driven code paths diverge, and there is
 no mechanism to re-evaluate filters mid-session. Enabling such a
 feature therefore slightly broadens the allowlist for every session,
 not only sessions that exercise the feature.
+
+The structured journal audit events (AUTHNFT_EVENT=open/close) reach
+sd_journal_send, which uses the existing sd-bus socket path
+(socket / sendmsg / connect / close / recvmsg) — all already in the
+allowlist from the sd-bus block above. No new syscall was needed for
+the audit-event channel.
 
 
 Style

@@ -110,9 +110,25 @@ Close-session sequence
     3. PAM_RHOST read
     4. nft_handler_cleanup: delete element { cg_id . src_ip } from the
        IPv4 or IPv6 set
+    5. event_close_emit: AUTHNFT_EVENT=close with the open-side
+       correlation token (see "Audit events" below)
 
 Cleanup failures log a warning and return PAM_SUCCESS. The 24-hour
 element timeout catches orphans.
+
+
+Audit events
+------------
+
+Every open_session success emits AUTHNFT_EVENT=open via
+sd_journal_send(3), and every close_session that ran against a valid
+session emits AUTHNFT_EVENT=close. Both carry an AUTHNFT_CORRELATION
+token — either inherited from PAM env "AUTHNFT_CORRELATION" (set by
+an upstream identity broker) or synthesized from
+clock_gettime+getpid+getrandom at open — and reused at close via
+authnft_session_t. SIEM consumers join the two events on that token.
+
+Contract, fields, and fallback behaviour: docs/INTEGRATIONS.txt §6.2.
 
 
 Trust model
