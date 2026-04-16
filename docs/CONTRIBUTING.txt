@@ -139,6 +139,13 @@ Tests
   then re-runs the unit suite under valgrind. The integration harness
   creates and removes its own `authnft-test` user and `authnft` group;
   override with `AUTHNFT_TEST_USER`.
+- `make test-integration-container` runs the same integration flow
+  inside a throwaway Arch container so /etc/passwd, /etc/pam.d,
+  nftables state, and systemd units on the host are never touched.
+  Requires `podman` with a systemd-capable configuration (default
+  on recent releases). No host sudo required. Preferred over
+  `make test-integration` when working on a host that cannot tolerate
+  transient user/group/nft state — e.g. a developer's laptop.
 - Run `sudo make distclean` to tear down a leftover `inet authnft`
   table and the throwaway `/etc/pam.d/authnft_test` config.
 - New behaviour does not require new tests — add one only if the

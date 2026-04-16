@@ -101,6 +101,23 @@ test-integration: $(TEST_BIN)
 	    ./$(TEST_BIN)
 	@sudo chown -R $$(id -u):$$(id -g) . 2>/dev/null; true
 
+# Containerised integration test. Runs the full test-integration flow
+# inside a throwaway Arch container so /etc/passwd, /etc/pam.d, nftables
+# state, and systemd units on the host are never touched. Requires
+# podman with a systemd-capable configuration (the default for recent
+# versions). Does NOT require host sudo — the container handles its own
+# root namespace.
+test-integration-container:
+	@command -v podman >/dev/null || { echo "podman not installed"; exit 1; }
+	podman build -t pam_authnft-test -f Containerfile .
+	podman run --rm \
+	    --systemd=always \
+	    --cap-add=NET_ADMIN \
+	    --cap-add=SYS_ADMIN \
+	    --security-opt label=disable \
+	    -v $(CURDIR):/src:ro,Z \
+	    pam_authnft-test
+
 install: $(TARGET)
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
@@ -123,7 +140,7 @@ install-man: man/pam_authnft.8
 	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-features.log man/pam_authnft.8
+	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -131,4 +148,4 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean test test-symbols test-integration trace trace-features distclean install uninstall man install-man
+.PHONY: all debug clean test test-symbols test-integration test-integration-container trace trace-features distclean install uninstall man install-man
