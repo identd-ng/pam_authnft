@@ -1,0 +1,524 @@
+pam_authnft integration contracts
+=================================
+
+Purpose
+-------
+
+pam_authnft is small on purpose. It does one job — pin an authenticated
+session to a kernel-enforced network identity — and delegates everything
+else to external tools. This document specifies the public contracts
+external projects use to integrate with pam_authnft, so third parties
+can implement producers, consumers, and tooling without reading the
+module source.
+
+The module is not a plugin host. There is no shared-library ABI, no
+dynamic loader, no callback registry. Every contract described here
+uses an existing kernel or userspace primitive (PAM environment, kernel
+keyring, filesystem, D-Bus, netlink) with a narrow, documented schema.
+This is deliberate: fewer moving parts, broader composability, and no
+linkage between projects means no shared trust boundary.
+
+
+Status labels
+-------------
+
+Each contract carries a status label:
+
+    stable   Load-bearing in the current release. Breakage is a bug.
+    draft    Implemented but subject to refinement. Producers should
+             pin to the current release and watch the changelog.
+    future   Identified need without a shipped mechanism. A producer
+             wanting this integration should open an issue so the
+             contract can be designed before code lands.
+
+
+1. PAM stack composition
+------------------------
+
+Status: stable
+
+pam_authnft is a PAM session module. Its behaviour is governed by the
+standard Linux-PAM contract (pam.conf(5)) plus the items below.
+
+1.1 Stack ordering
+
+    session required pam_unix.so           # or similar, sets PAM_USER
+    session optional pam_systemd.so        # optional, unrelated
+    session optional <producer>.so         # any claims_env producer
+    session required pam_authnft.so claims_env=MY_KEY
+
+Any module that wants to influence pam_authnft's behaviour via a PAM
+environment variable MUST run before pam_authnft in the session stack.
+Ordering within the PAM stack is the admin's responsibility; the module
+does not attempt to re-invoke producers.
+
+1.2 PAM items read
+
+pam_authnft reads the following items from the PAM handle:
+
+    PAM_USER   — authenticated username. Required. Validated against
+                 a conservative character set before any interpolation.
+    PAM_RHOST  — optional. Source IP literal or hostname depending on
+                 sshd UseDNS setting. See pam_authnft(8) for the three
+                 supported rhost_policy modes.
+
+No other PAM items are consulted.
+
+1.3 PAM environment variables read
+
+pam_authnft reads at most one PAM environment variable, whose name is
+supplied by the operator via the claims_env=NAME module argument (see
+§2 below). Module arguments are not inherited from environment.
+
+1.4 PAM data keys
+
+pam_authnft owns pam_set_data key "authnft_cg_id". Other modules MUST
+NOT read, write, or free this key. The stored value shape is an
+internal ABI and may change between releases.
+
+The key name is retained for historical reasons even though the stored
+value now includes more than just the cgroup ID (see invariant #3 in
+CONTRIBUTING.txt).
+
+
+2. claims_env contract (keyring payload channel)
+------------------------------------------------
+
+Status: stable
+
+A producer that wants to surface small session metadata — audit IDs,
+claim tags, session handles — in the nftables element comment emitted
+by pam_authnft SHOULD use this contract. The payload is opaque to
+pam_authnft; sanitization and truncation are performed on read.
+
+2.1 Transport
+
+    Producer                                 Kernel                 pam_authnft
+    --------                                 ------                 -----------
+    add_key("user", desc, payload,   -->     keyring
+            len, anchor)                     allocates
+                                             serial = N
+    keyctl(KEYCTL_SET_TIMEOUT, N, ttl)
+    keyctl(KEYCTL_SETPERM, N, perms)
+    pam_putenv(pamh, "NAME=N")       -->     PAM env
+                                             "NAME=N"     -->       pam_getenv("NAME")
+                                                                    keyctl(KEYCTL_READ, N, ...)
+                                                                    sanitize + truncate
+                                                                    embed in nft comment
+
+2.2 Producer requirements
+
+    MUST use pam_putenv(3) to set the env variable. libc putenv(3) is
+    not carried across the sshd privsep fork by import_environments()
+    and will silently fail to reach pam_authnft on sshd stacks.
+
+    MUST use the "user" key type. Other types (keyring, logon, big_key)
+    are not supported.
+
+    MUST place a non-empty payload in the key. Zero-byte payloads are
+    treated as "no tag available" by the consumer.
+
+    MUST NOT include NUL bytes in the payload. The consumer sanitizer
+    stops at the first NUL by design and producers that embed one will
+    see their payload truncated.
+
+    SHOULD anchor the key in KEY_SPEC_SESSION_KEYRING (-3). If the PAM
+    stack does not run pam_keyinit before the producer, this anchor
+    will fall back to the user keyring; behaviour in that configuration
+    is undefined but currently works on stock Arch, Debian, and RHEL.
+
+    SHOULD call KEYCTL_SET_TIMEOUT before KEYCTL_SETPERM. Setting perms
+    first drops SETATTR, which blocks subsequent timeout updates.
+
+    SHOULD set KEYCTL_SETPERM to KEY_POS_VIEW|KEY_POS_READ|KEY_POS_SEARCH
+    only (POSSESSOR bits). Do not grant write to GROUP or OTHER.
+
+    SHOULD cap payload length at 256 bytes. The consumer truncates at
+    CLAIMS_TAG_MAX (192 bytes after sanitization) and the extra headroom
+    covers the ratio of unsafe-byte expansion, if any.
+
+    SHOULD use a description prefix unique to the producer project
+    (e.g., "foo_<session_id>") to avoid collisions if multiple producers
+    run in the same stack.
+
+2.3 Consumer behaviour
+
+    Reads the payload with keyctl(KEYCTL_READ).
+
+    Sanitizes to the character class [A-Za-z0-9_=,.:;/-]. Every byte
+    outside the class is replaced with '_'.
+
+    Truncates at CLAIMS_TAG_MAX bytes.
+
+    Embeds the sanitized tag in the nftables element comment as
+    "<user> (PID:<pid>) [<tag>]".
+
+    Non-fatal on every failure: missing env var, non-numeric value,
+    unknown serial, permission denied, empty sanitized output. In any
+    of these cases pam_authnft emits the element with the legacy
+    comment ("<user> (PID:<pid>)") and continues.
+
+2.4 Payload format
+
+pam_authnft imposes no structure. Producers MAY ship:
+
+    audit-session:7f3e9a
+    0123456789abcdef
+    role=db-reader
+    ticket-4218/approved-by-ops
+    runbook=RB-0091,shift=night
+
+— anything readable to an operator running `nft list set inet
+authnft session_map_cg`. The contract is "printable ASCII, bounded
+length, producer-defined meaning." pam_authnft does not parse,
+interpret, or validate the payload structure; it is an opaque tag
+displayed verbatim (after sanitization) in the element comment.
+
+2.5 Security note
+
+The producer is inside the trust boundary. The payload is not
+authenticated — any module in the PAM stack that can write the key
+can supply any tag. The sanitization protects the nftables command
+stream from injection; it does NOT protect against a hostile producer.
+Operators SHOULD ensure all producers in their PAM stack are
+root-trusted.
+
+
+3. Non-PAM producer contracts
+-----------------------------
+
+Status: future
+
+Tools that operate outside the PAM stack — for example, sshd
+AuthorizedKeysCommand helpers — cannot call pam_putenv and therefore
+cannot use §2 directly. Three candidate bridges have been identified;
+none have shipped.
+
+3.1 SSH environment injection (proposed)
+
+sshd accepts `environment="NAME=value"` prefixes in authorized_keys
+entries. An AuthorizedKeysCommand can emit these; they become part of
+the session's environment and are visible to pam_authnft via getenv(3).
+
+A small consumer-side change (new module arg, say env_source=session)
+would switch the claims lookup from pam_getenv() to getenv(). The
+producer-side requirement reduces to "emit an environment= directive
+carrying the key serial."
+
+Before this becomes stable, pam_authnft needs a design for how
+environment= interacts with the keyring ACL. A serial written by an
+unprivileged helper is not readable by root without relaxing perms to
+KEY_POS_READ on OTHER, which widens the threat model.
+
+3.2 User keyring via @u (proposed)
+
+A non-PAM producer running as the target UID can anchor its key in
+KEY_SPEC_USER_KEYRING (-4) instead of the session keyring. The user
+keyring is persistent across sessions and readable by root (via
+KEYCTL_SEARCH starting from the user keyring).
+
+pam_authnft would need an additional lookup path or an explicit module
+arg (e.g., keyring_anchor=user) to fall through to @u when the PAM
+env var is absent. Producer still needs a way to communicate the
+serial — likely a file drop in /run/<producer>/, which defeats the
+benefit of using the keyring at all.
+
+3.3 Tmpfs-resident state file (pragmatic fallback)
+
+A producer publishes `/run/<producer>/<session_id>` atomically via
+write-to-temp + rename(2) into a tmpfs directory owned by root. The
+file contains a single `KEY=value` line (or a small structured
+format). pam_authnft reads the file, validates ownership and mode,
+and injects the value.
+
+This mirrors the standard Linux convention used by /run/systemd,
+/run/udev, and /run/user for ephemeral state exchanged between
+root-trusted components. It is the simplest bridge and the one most
+likely to ship first. The downside is re-implementing the cleanup and
+lifetime semantics that the kernel keyring handles for free.
+
+Projects interested in a non-PAM producer bridge should open an issue
+describing the use case before implementing against any of these
+sketches — the shipped design may look different.
+
+
+4. Nftables fragment contract
+-----------------------------
+
+Status: stable
+
+pam_authnft loads a per-user nftables fragment on every open_session
+where the user is a member of the `authnft` group. The fragment is the
+primary integration point for configuration-management tools, identity
+brokers, and policy engines.
+
+4.1 File location and ownership
+
+    Path:      /etc/authnft/users/<username>
+    Owner:     UID 0 (root), GID any
+    Mode:      any mode with no S_IWOTH bit set (stat().st_mode & S_IWOTH == 0)
+    Encoding:  UTF-8 per nftables' lexer; 7-bit ASCII is safe
+
+4.2 Sets available to the fragment
+
+pam_authnft creates three named sets in `table inet authnft` before
+including the fragment:
+
+    session_map_ipv4   typeof meta cgroup . ip saddr;  flags timeout
+    session_map_ipv6   typeof meta cgroup . ip6 saddr; flags timeout
+    session_map_cg     typeof meta cgroup;             flags timeout
+
+Fragments MAY reference these sets in match expressions:
+
+    add rule inet authnft filter \
+        meta cgroup . ip saddr @session_map_ipv4 ct state new \
+        tcp dport { 22, 443 } accept
+
+    add rule inet authnft filter \
+        meta cgroup @session_map_cg \
+        ct state new tcp dport 8080 accept
+
+Fragments SHOULD NOT redeclare these sets. A redeclaration with an
+incompatible type would fail the transaction and deny the session.
+
+4.3 Chain available to the fragment
+
+pam_authnft creates a base chain:
+
+    chain filter {
+        type filter hook input priority filter - 1;
+        policy accept;
+    }
+
+Fragments typically add rules into this chain via
+`add rule inet authnft filter ...`. Fragments MAY create their own
+chains under `table inet authnft`; these are not cleaned up by
+pam_authnft on close_session and persist for the table's lifetime.
+
+4.4 Programmatic fragment generation
+
+Tools that generate fragments (Ansible roles, Salt states, bespoke
+identity brokers) SHOULD:
+
+    Write to /etc/authnft/users/<username> with mode 0644 and uid 0.
+    Use a temporary file + rename(2) for atomicity.
+    Validate the fragment with `nft -c -f <file>` before installing.
+    Track generation provenance in a comment block for operator sanity.
+
+The module does not signal producers on fragment reload; fragments are
+re-read on every open_session.
+
+4.5 Element timeout
+
+pam_authnft inserts session elements with a 1-day timeout as a safety
+net. Primary cleanup is close_session. Fragments MUST NOT set their
+own elements in session_map_ipv{4,6}/session_map_cg; these sets are
+owned by pam_authnft.
+
+
+5. Systemd scope and slice contracts
+------------------------------------
+
+Status: stable
+
+Every session opened through pam_authnft is placed in a transient
+systemd scope. External tools that want to observe or constrain
+sessions integrate with systemd's scope/slice model.
+
+5.1 Unit naming
+
+    Slice:  authnft.slice
+    Scope:  authnft-<username>-<session_pid>.scope
+
+The slice is shipped in the package (data/authnft.slice). Operators
+apply combined limits via systemd.resource-control(5) directives on
+the slice.
+
+5.2 External discoverability
+
+A running session can be located via:
+
+    systemctl --type=scope --no-pager list-units 'authnft-*.scope'
+    systemd-cgls /authnft.slice
+    cat /sys/fs/cgroup/authnft.slice/authnft-<user>-<pid>.scope/cgroup.procs
+
+Tools that correlate nftables elements to scopes can read the element
+comment (see §6.1) to recover <username> and <pid>.
+
+5.3 Per-user resource limits
+
+Operators MAY create drop-in directories for per-user limits:
+
+    /etc/systemd/system/authnft.slice.d/<user>.conf
+
+pam_authnft does not generate these. They are outside the module's
+scope; the systemd documentation is authoritative.
+
+
+6. Observability and audit contracts
+------------------------------------
+
+Status: stable
+
+6.1 Nftables element comment format
+
+Every session element carries a comment string:
+
+    "<username> (PID:<session_pid>)"              # without claims_env
+    "<username> (PID:<session_pid>) [<tag>]"      # with claims_env
+
+<tag> is the sanitized payload from §2. Operators SHOULD parse with
+this grammar, not by regex on the raw nft output:
+
+    comment         = username " (PID:" pid ")" [ " [" tag "]" ]
+    username        = 1*32( ALPHA / DIGIT / "_" / "-" / "." )
+    pid             = 1*10DIGIT
+    tag             = *192( ALPHA / DIGIT / "_" / "=" / "," / "." /
+                            ":" / ";" / "/" / "-" )
+
+Future extensions to the comment format will be announced in the
+changelog and released under a new stable tag.
+
+6.2 Journald / syslog
+
+pam_authnft emits log lines via pam_syslog(3) with the facility and
+identifier chosen by the calling PAM application (typically sshd →
+LOG_AUTH, ident "sshd"). Line format is free-form prose prefixed with
+"authnft:" for grep-ability.
+
+Structured journald fields are on the roadmap (TODO.txt medium-term).
+Until they ship, SIEM integrations SHOULD match on the "authnft:"
+prefix plus a small set of known message fragments:
+
+    authnft: cleanup failed for <user>
+    authnft: PAM_RHOST/kernel peer divergence: ...
+    authnft: missing fragment for <user> at ...
+    authnft: insecure permissions on ...
+
+6.3 Cgroup correlation
+
+The cgroup inode embedded in session_map_ipv{4,6}/session_map_cg
+elements is the cgroupv2 inode of the scope in §5. Correlation:
+
+    cg_id from nft element
+    find /sys/fs/cgroup -xdev -inum <cg_id> 2>/dev/null
+    → returns /sys/fs/cgroup/authnft.slice/authnft-<user>-<pid>.scope
+
+This is the recommended path for observability tools that want to
+trace a packet (via `nft monitor trace`) back to a session.
+
+
+7. Producer categories
+----------------------
+
+Status: informational
+
+pam_authnft is agnostic about where payloads and fragments originate.
+Any tool that satisfies the relevant contract in §1 through §6 is a
+valid producer. The categories below are descriptive, not prescriptive:
+a project may fit one, several, or none of them.
+
+    PAM modules that run in-stack
+        Participate in §1 (stack ordering, PAM items, env vars) and
+        may use §2 (keyring payload) natively via pam_putenv. This is
+        the shortest integration path.
+
+    Programs invoked by sshd outside the PAM stack
+        AuthorizedKeysCommand, ForceCommand wrappers, and similar
+        hooks run before or alongside PAM and cannot call pam_putenv.
+        They need one of the bridges in §3, all currently future.
+
+    Out-of-band fragment generators
+        Configuration-management tools (Ansible, Salt), policy brokers,
+        inventory-driven automation. Integrate via §4 by writing files
+        to /etc/authnft/users/. Do not participate in §2 unless they
+        also run code in-stack.
+
+    Observability and audit consumers
+        SIEM collectors, tracing tools, resource-accounting daemons.
+        Read the contracts in §5 and §6. Do not write anything
+        pam_authnft depends on.
+
+Projects that implement a producer or consumer role may self-nominate
+for listing in a future ECOSYSTEM.txt file. A listing implies neither
+endorsement nor interoperability testing.
+
+
+8. Versioning
+-------------
+
+The contracts in this document are versioned independently from the
+pam_authnft package version. Backwards-incompatible changes require a
+new major version of the module and a minimum one-release deprecation
+window with the old contract continuing to work.
+
+Contract version: 1.0 (first release covering §1, §2, §4, §5, §6).
+
+8.1 Tag content is opaque
+
+The keyring payload described in §2 is a byte string. pam_authnft does
+no semantic parsing: it reads the payload, applies the sanitization
+rule in §2.3, truncates to CLAIMS_TAG_MAX, and embeds the result in
+the comment grammar of §6.1. The payload carries no in-band version
+field and the consumer performs no runtime version negotiation;
+contract identity is established at module-version granularity, not
+per-session.
+
+8.2 Forward compatibility — additive-only at the wire
+
+Future contract revisions MUST be additive at every boundary the
+consumer observes: keyring transport (§2.1), producer requirements
+(§2.2) that a V=1 consumer could still satisfy by construction,
+sanitization char class (§2.3), and comment grammar (§6.1). A V≥2
+producer emitting richer payloads still gets those bytes sanitized
+and embedded by a V=1 consumer without a new error path. Removing a
+previously-valid character from the sanitization class, narrowing the
+accepted key type, or repurposing a comment-grammar field is a major
+version bump and triggers the deprecation window above.
+
+8.3 Consumer behaviour on unavailable or malformed tags
+
+Whether the producer is a V=1, V≥2, or entirely unknown implementation:
+if the env var named by claims_env= is absent, the serial is
+malformed, the key is inaccessible (perms, timeout, revoked), or the
+payload sanitizes to empty, the consumer skips the tag and proceeds
+with the session. This is fail-open by design and consistent with
+claims_env being an optional forensic-correlation channel rather
+than an authentication factor.
+
+Observability of these skip paths is intentionally tiered so SIEM
+dashboards see only signals that indicate producer-side bugs:
+
+    Malformed serial (non-decimal, out of int32 range)
+        pam_syslog(LOG_WARNING, "authnft: claims env '%s' not a
+        valid key serial", env)
+
+    keyctl read failure (EACCES, EKEYEXPIRED, EKEYREVOKED, ENOKEY)
+        pam_syslog(LOG_WARNING, "authnft: keyctl_read(serial=%ld)
+        failed: %m", serial)
+
+    Env var absent or empty
+        No log. This is the non-misconfiguration "no producer ran"
+        case and would be the single loudest source of warning spam
+        on stacks where claims_env is declared optional.
+
+    Payload sanitizes to empty
+        DEBUG build only. Rare in practice; likely indicates binary
+        garbage from a non-compliant producer. Promote to WARNING
+        if you observe it in the field.
+
+The error asymmetry in CONTRIBUTING.txt invariant #4 (open_session
+strict, close_session best-effort) applies to invariant-level
+failures — seccomp, cgroup resolution, fragment validation. It does
+not extend to optional metadata channels; claims_env unavailability
+never denies a session.
+
+
+9. Reporting contract ambiguities
+---------------------------------
+
+If you are implementing a producer or consumer and find this document
+underspecifies something, open an issue titled "Contract §<N>:
+<question>" on the project tracker. The preferred outcome is a
+clarification to the document rather than a handshake over email —
+the next implementer should not have to re-derive the answer.
