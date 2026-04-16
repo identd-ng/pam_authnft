@@ -112,14 +112,18 @@ static void run_cgroup_logic_test(void) {
     }
 }
 
-/* Stage 6: binary hardening flags are present in the compiled .so */
+/* Stage 6: binary hardening flags are present in the compiled .so.
+ * Two checksec packages exist in the wild with incompatible CLIs —
+ * checksec.sh (Arch `checksec` package) accepts `file <path>`, and
+ * Fedora's `checksec` accepts `--file=<path>`. Try both. */
 static void run_checksec_test(void) {
     printf("[STAGE 6] Binary hardening (checksec)...\n");
     if (system("command -v checksec > /dev/null 2>&1") != 0) {
         printf("[SKIP] checksec not found.\n");
         return;
     }
-    if (system("checksec file pam_authnft.so | grep -qi 'Full RELRO'") == 0)
+    if (system("checksec file pam_authnft.so 2>/dev/null | grep -qi 'Full RELRO'") == 0 ||
+        system("checksec --file=pam_authnft.so --format=cli 2>/dev/null | grep -qi 'Full RELRO'") == 0)
         printf("[PASS]\n");
     else
         exit(1);
@@ -155,6 +159,13 @@ static void run_path_resolution_test(void) {
     (void)system(cmd);
 
     int res = nft_handler_setup(NULL, test_user, 12345, "127.0.0.1", NULL);
+
+    /* Remove the element this stage inserted so the nft table is not
+     * polluted across repeated test runs. Leaving {12345 . 127.0.0.1}
+     * behind would cause false positives in integration test 10.6,
+     * which expects the set to be empty at the start of its assertion.
+     * Best-effort; a cleanup failure does not fail the stage. */
+    (void)nft_handler_cleanup(NULL, test_user, 12345, "127.0.0.1");
 
     snprintf(cmd, sizeof(cmd), "sudo rm -f %s", mock_path);
     (void)system(cmd);
@@ -233,7 +244,8 @@ static void run_peer_lookup_test(void) {
 
     int cs = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (cs < 0 || connect(cs, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        if (cs >= 0) close(cs); close(ls);
+        if (cs >= 0) close(cs);
+        close(ls);
         printf("[SKIP] connect: %s\n", strerror(errno));
         return;
     }

@@ -36,6 +36,16 @@ fi
 USER_CREATED=0
 GROUP_CREATED=0
 
+# Flush any leftover `inet authnft` table from prior runs. Residue can
+# come from: (a) unit test stage 7 inserting {12345 . 127.0.0.1} without
+# cleanup, or (b) a previous integration run where 10.2's close_session
+# ran in a separate PAM handle and correctly no-opped (per invariant #6),
+# leaving the element behind until its 24-hour timeout. 10.6 checks for
+# "any element present" and would false-positive on such residue.
+if nft list tables 2>/dev/null | grep -q "inet authnft"; then
+    nft delete table inet authnft
+fi
+
 cleanup() {
     rm -f "$RULES_DIR/$TEST_USER" "$PAM_TEST_CONF"
     if [[ $USER_CREATED -eq 1 ]]; then

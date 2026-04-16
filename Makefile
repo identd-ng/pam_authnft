@@ -101,20 +101,24 @@ test-integration: $(TEST_BIN)
 	    ./$(TEST_BIN)
 	@sudo chown -R $$(id -u):$$(id -g) . 2>/dev/null; true
 
-# Containerised integration test. Runs the full test-integration flow
-# inside a throwaway Arch container so /etc/passwd, /etc/pam.d, nftables
-# state, and systemd units on the host are never touched. Requires
-# podman with a systemd-capable configuration (the default for recent
-# versions). Does NOT require host sudo — the container handles its own
-# root namespace.
-test-integration-container:
+# Containerised unit-test run. Builds and runs `make test` inside a
+# Fedora-based container with CAP_NET_ADMIN, so stages that would
+# otherwise SKIP (4 and 7, both of which require CAP_NET_ADMIN) run
+# against a real kernel nftables context. Works on any host with
+# podman or docker (Fedora, Arch, Debian, Ubuntu, RHEL, macOS via
+# podman-machine). Does NOT require host sudo.
+#
+# Does NOT cover the pamtester end-to-end flow (integration
+# 10.1–10.7). That path needs systemd as PID 1 to service
+# StartTransientUnit over sd-bus, and is run on a real host via
+# `sudo make test-integration`.
+test-container:
 	@command -v podman >/dev/null || { echo "podman not installed"; exit 1; }
 	podman build -t pam_authnft-test -f Containerfile .
 	podman run --rm \
-	    --systemd=always \
 	    --cap-add=NET_ADMIN \
-	    --cap-add=SYS_ADMIN \
 	    --security-opt label=disable \
+	    --security-opt seccomp=unconfined \
 	    -v $(CURDIR):/src:ro,Z \
 	    pam_authnft-test
 
@@ -148,4 +152,4 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean test test-symbols test-integration test-integration-container trace trace-features distclean install uninstall man install-man
+.PHONY: all debug clean test test-symbols test-integration test-container trace trace-features distclean install uninstall man install-man
