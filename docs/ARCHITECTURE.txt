@@ -100,6 +100,13 @@ Each call is a separate nft_run_cmd_from_buffer. libnftables does not
 support `include` inside declarative blocks; the element is inserted
 first so the fragment can reference the set.
 
+The fragment in call 2 may itself contain `include` directives;
+libnftables resolves these transitively at parse time. pam_authnft
+performs ownership and mode checks only on the top-level fragment at
+/etc/authnft/users/<user>. See docs/INTEGRATIONS.txt §4.6 for the
+composition contract, security obligations on included files, and
+cycle-detection guidance.
+
 
 Close-session sequence
 ----------------------

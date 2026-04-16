@@ -116,7 +116,15 @@ into. Cleanup failures are logged but do not prevent session teardown.
 */etc/authnft/users/\<user\>*
 :   Per-user nftables fragment. Must be owned by root and not
     world-writable. Included at the top level of the nftables command
-    stream after the session element has been inserted.
+    stream after the session element has been inserted. The fragment
+    MAY use nftables' **include** directive to pull in shared rules
+    from other files (e.g., a group-level fragment under
+    */etc/authnft/groups/*); libnftables resolves includes
+    transitively. pam_authnft does not recurse ownership checks into
+    included files — the admin MUST ensure every transitively
+    included file is also root-owned and not world-writable. See
+    **docs/INTEGRATIONS.txt** §4.6 for the composition pattern and
+    a cycle-detection note.
 
 */etc/systemd/system/authnft.slice*
 :   Parent slice unit for all session scopes. Use
