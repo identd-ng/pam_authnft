@@ -188,9 +188,12 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
         return PAM_SESSION_ERR;
     }
 
-    return nft_handler_setup(pamh, user, cg_id,
-                             norm_ip[0] ? norm_ip : NULL,
-                             sd->claims_tag[0] ? sd->claims_tag : NULL);
+    int rc = nft_handler_setup(pamh, user, cg_id,
+                               norm_ip[0] ? norm_ip : NULL,
+                               sd->claims_tag[0] ? sd->claims_tag : NULL);
+    if (rc == PAM_SUCCESS)
+        (void)session_file_write(pamh, sd, user, session_pid);
+    return rc;
 }
 
 PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
@@ -219,6 +222,8 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
     if (nft_handler_cleanup(pamh, user, sd->cg_id, ip) != PAM_SUCCESS)
         pam_syslog(pamh, LOG_WARNING,
                    "authnft: cleanup failed for %s — element may persist", user);
+
+    (void)session_file_remove(pamh, sd->cg_id);
 
     return PAM_SUCCESS;
 }

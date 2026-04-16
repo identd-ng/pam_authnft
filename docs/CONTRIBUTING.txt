@@ -110,6 +110,19 @@ no mechanism to re-evaluate filters mid-session. Enabling such a
 feature therefore slightly broadens the allowlist for every session,
 not only sessions that exercise the feature.
 
+Unconditional syscalls for always-on observability paths (the
+session-identity file under `/run/authnft/sessions/`) are similarly
+unconditional. The write path uses `rename(2)` (or `renameat2(2)`
+depending on the host's glibc dispatch) at open; the cleanup path
+uses `unlink(2)` (or `unlinkat(2)`) at close. All four variants are
+allowlisted because glibc routes to different syscalls on different
+kernel / libc combinations — observed empirically via `make trace`
+on Arch (bare `rename` / `unlink`) vs Fedora (some paths reach the
+`*at` variants). All four are read/write operations on a known
+root-owned tmpfs directory; they do not expand the capability
+surface the module already has for its primary fragment-loading
+work.
+
 
 Style
 -----

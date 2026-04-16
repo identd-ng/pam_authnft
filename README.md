@@ -70,6 +70,13 @@ On logout the stored cgroup ID is retrieved from PAM data and the element is
 deleted from the exact set it was inserted into. The nftables table and sets
 persist across sessions.
 
+A per-session JSON file is also written at
+`/run/authnft/sessions/<cg_id>.json` on session open and removed on close.
+Unprivileged monitoring agents, SIEM collectors, and workload schedulers can
+read it to correlate a cgroup inode back to the owning pam_authnft session
+without needing a PAM handle. Schema, lifecycle, and reader guarantees are
+in [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §5.6.
+
 ### Module arguments
 
 | Argument | Default | Effect |

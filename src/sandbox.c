@@ -96,6 +96,17 @@ int sandbox_apply(pam_handle_t *pamh) {
     /* Filesystem metadata query — libnftables or libsystemd on Fedora.
      * fstatfs is already allowlisted above; statfs is its path-based twin. */
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(statfs), 0);
+    /* Session-identity file under /run/authnft/sessions/<cg_id>.json.
+     * Empirically on Arch glibc 2.43 + Linux 6.18, rename() and unlink()
+     * both go through the *legacy* single-arg syscalls (SYS_rename,
+     * SYS_unlink), not their newer *at variants. On other glibc / libc
+     * versions they may route through renameat2 / unlinkat. Allowlist
+     * both so the module is portable across that split without a
+     * distro-specific build flag. See docs/INTEGRATIONS.txt §5.6. */
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(rename), 0);
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(renameat2), 0);
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(unlink), 0);
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(unlinkat), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(rt_sigprocmask), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(arch_prctl), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(exit_group), 0);

@@ -110,9 +110,25 @@ Close-session sequence
     3. PAM_RHOST read
     4. nft_handler_cleanup: delete element { cg_id . src_ip } from the
        IPv4 or IPv6 set
+    5. /run/authnft/sessions/<cg_id>.json unlinked
 
 Cleanup failures log a warning and return PAM_SUCCESS. The 24-hour
-element timeout catches orphans.
+element timeout catches orphans. Session-file orphans are reaped by
+systemd-tmpfiles (MaxAge=7d) per data/authnft.tmpfiles.
+
+
+Session-identity files
+----------------------
+
+After open_session succeeds, pam_authnft writes
+/run/authnft/sessions/<cg_id>.json with the same identity data held
+in PAM data. The write uses a tempfile + rename(2) pattern so
+readers never see a partial file. Unprivileged observers (SIEM
+agents, workload schedulers, monitoring daemons, operator consoles)
+read these files to correlate a cgroup inode back to a pam_authnft
+session without needing a PAM handle or root access to module
+source. Schema and lifecycle are documented in
+docs/INTEGRATIONS.txt §5.6.
 
 
 Trust model
