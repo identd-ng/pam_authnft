@@ -177,13 +177,35 @@ it in the pull-request template checkbox.
 Regenerating the seccomp allowlist
 ----------------------------------
 
+Two targets cover different code paths:
+
     make trace
 
 Runs the integration harness with the sandbox bypassed under
-`strace -f -c`, writing a syscall-usage summary to `trace.log`. Compare
-against the allowlist categories in `src/sandbox.c` and add any newly
-observed syscalls with a one-line justification comment. Do not add
-syscalls without strace evidence.
+`strace -f -c`, writing a syscall-usage summary to `trace.log`.
+Authoritative for the default open_session + close_session path.
+Requires root and modifies system state (creates a test user and PAM
+config; tears them down on exit).
+
+    make trace-features
+
+Runs the unit suite under `strace -f -c`, writing to
+`trace-features.log`. Exercises code paths that the pamtester-driven
+trace does not reach: `rhost_policy=kernel` sock_diag (unit stage 9)
+and `claims_env` keyctl reads (unit stage 10). Root-free and
+side-effect-free. Use this when adding a feature whose syscall
+footprint cannot easily be reached from a plain pamtester run.
+
+The unit-suite trace picks up syscalls issued by the test harness
+itself (add_key as a stage 10 fixture, listen/accept for the stage 9
+TCP pair, wait4/clone for stages 2 and 3, personality as the
+deliberately forbidden stage 2 syscall). The trace_features.sh output
+lists these explicitly; subtract them before comparing against
+`src/sandbox.c`.
+
+In both cases: compare against the allowlist in `src/sandbox.c` and
+add any newly observed production syscall with a one-line
+justification comment. Do not add syscalls without strace evidence.
 
 
 Submitting changes

@@ -4,6 +4,7 @@ authnft_test
 authnft_test.d
 rules.tmp
 trace.log
+trace-features.log
 
 # Editor and IDE files
 .vscode/

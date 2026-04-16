@@ -77,6 +77,16 @@ trace: $(TARGET)
 	@command -v pamtester >/dev/null || { echo "pamtester not installed"; exit 1; }
 	sudo ./tests/trace.sh $(CURDIR)/$(TARGET)
 
+# Feature-path companion to `make trace`. Runs the unit suite under
+# `strace -f -c` to catalogue syscalls issued by code paths that the
+# pamtester-driven trace cannot easily exercise (rhost_policy=kernel
+# sock_diag, claims_env keyctl read). Output: trace-features.log plus a
+# diff-friendly report on stderr identifying test-harness-only syscalls.
+# No root required; no system state modified.
+trace-features: $(TEST_BIN)
+	@command -v strace >/dev/null || { echo "strace not installed"; exit 1; }
+	./tests/trace_features.sh
+
 $(TEST_BIN): $(TARGET)
 	$(CC) $(CFLAGS_BASE) $(LDFLAGS_BASE) -g -O1 \
 	    tests/test_suite.c $(OBJS) -o $(TEST_BIN) \
@@ -113,7 +123,7 @@ install-man: man/pam_authnft.8
 	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log man/pam_authnft.8
+	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-features.log man/pam_authnft.8
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -121,4 +131,4 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean test test-symbols test-integration trace distclean install uninstall man install-man
+.PHONY: all debug clean test test-symbols test-integration trace trace-features distclean install uninstall man install-man
