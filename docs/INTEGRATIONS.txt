@@ -544,21 +544,115 @@ this grammar, not by regex on the raw nft output:
 Future extensions to the comment format will be announced in the
 changelog and released under a new stable tag.
 
-6.2 Journald / syslog
+6.2 Structured audit events (journald)
 
-pam_authnft emits log lines via pam_syslog(3) with the facility and
+Status: stable (field schema v=1)
+
+Every open_session success emits a structured journal entry with
+AUTHNFT_EVENT=open; every close_session that observed a prior open
+via pam_set_data emits AUTHNFT_EVENT=close. Both share a
+per-session AUTHNFT_CORRELATION token so a SIEM can join the two
+events (and, by convention, the upstream authentication event that
+produced the same token). This is the machine-readable audit-trail
+surface for compliance reviewers and SIEM pipelines.
+
+6.2.1 Identifier
+
+    SYSLOG_IDENTIFIER=pam_authnft
+
+Filter with `journalctl -t pam_authnft` or match on
+`SYSLOG_IDENTIFIER=pam_authnft` in journald exporters.
+
+6.2.2 Fields
+
+Common to both events:
+
+    AUTHNFT_EVENT         "open" | "close"
+    AUTHNFT_USER          PAM_USER (charset [A-Za-z0-9._-], max 32)
+    AUTHNFT_CG_ID         cgroupv2 inode, decimal uint64
+    AUTHNFT_CORRELATION   shared token joining this event to its
+                          pair. Class: [A-Za-z0-9_.:-]
+
+Open-only:
+
+    AUTHNFT_REMOTE_IP     normalized source IP, or "" on cg-only path
+    AUTHNFT_FRAGMENT      absolute path to the candidate fragment
+                          (/etc/authnft/users/<user>)
+    AUTHNFT_CLAIMS_TAG    sanitized keyring payload (§2), "" if none
+    AUTHNFT_SCOPE_UNIT    systemd scope unit name (§5.1)
+
+Human-readable MESSAGE is also set (see journalctl default output):
+
+    session opened: user=<u> cg_id=<n> remote=<ip> corr=<token>
+    session closed: user=<u> cg_id=<n> corr=<token>
+
+PRIORITY is LOG_INFO (6). No event is currently emitted at a higher
+priority — operator-facing errors still land via pam_syslog(3).
+
+6.2.3 Correlation token sources
+
+pam_authnft resolves AUTHNFT_CORRELATION at open_session from, in
+order:
+
+    1. PAM env "AUTHNFT_CORRELATION", set by an upstream module via
+       pam_putenv(3). Sanitized to the class above; characters
+       outside the class are dropped. Empty-after-sanitize falls
+       through to the next step.
+
+    2. Synthesized token of the form
+       "authnft-<unix_seconds>-<pid>-<8 hex random>". Uses
+       clock_gettime(2) + getrandom(2) + getpid(2); no new syscalls.
+
+The same token is stored in authnft_session_t (invariant #3) and
+reused at close_session, so a close-side producer has no work to do.
+
+6.2.4 Producer contract for upstream correlation
+
+A PAM auth module (e.g., an identity broker that stamps session
+audit logs with its own trace ID) SHOULD set AUTHNFT_CORRELATION
+via pam_putenv(3) before pam_authnft runs:
+
+    pam_putenv(pamh, "AUTHNFT_CORRELATION=<producer-trace-id>");
+
+Character class: [A-Za-z0-9_.:-]. Length: unbounded at input;
+pam_authnft truncates at CORRELATION_ID_MAX = 64 bytes after
+sanitization. Other bytes are silently dropped (not substituted)
+to keep tokens short.
+
+If the upstream log stream already carries the same trace ID, a
+reviewer can join authentication and session events across streams
+without any shared database — just grep on the correlation value.
+
+6.2.5 Delivery guarantees
+
+sd_journal_send(3) writes to /run/systemd/journal/socket. On success
+the entry is durably queued for journald before the syscall returns.
+
+If the socket is unreachable (non-systemd host, sandbox restriction,
+filesystem issue), pam_authnft falls back to pam_syslog(LOG_INFO)
+with the same correlation token and a note that the journal was
+unavailable. SIEM consumers that ingest both journald and syslog
+will capture the event either way.
+
+The session is NEVER failed on an audit-emit error — audit
+observability is secondary to the PAM lifecycle.
+
+6.2.6 Free-form pam_syslog(3) lines
+
+In addition to the structured events above, pam_authnft emits
+operator-facing log lines via pam_syslog(3) with the facility and
 identifier chosen by the calling PAM application (typically sshd →
-LOG_AUTH, ident "sshd"). Line format is free-form prose prefixed with
-"authnft:" for grep-ability.
-
-Structured journald fields are on the roadmap (TODO.txt medium-term).
-Until they ship, SIEM integrations SHOULD match on the "authnft:"
-prefix plus a small set of known message fragments:
+LOG_AUTH, ident "sshd"). These have free-form prose prefixed with
+"authnft:" and cover error paths not otherwise visible:
 
     authnft: cleanup failed for <user>
     authnft: PAM_RHOST/kernel peer divergence: ...
     authnft: missing fragment for <user> at ...
     authnft: insecure permissions on ...
+
+Consumers that need a complete audit trail SHOULD subscribe to
+both the structured AUTHNFT_EVENT= entries (for happy-path session
+lifecycle) and the "authnft:" prose (for error conditions).
 
 6.3 Cgroup correlation
 

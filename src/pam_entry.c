@@ -182,6 +182,8 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
         (void)keyring_fetch_tag(pamh, claims_env, sd->claims_tag,
                                 sizeof(sd->claims_tag));
     }
+    event_correlation_capture(pamh, sd->correlation_id,
+                              sizeof(sd->correlation_id));
     if (pam_set_data(pamh, "authnft_cg_id", sd, free_pam_data) != PAM_SUCCESS) {
         pam_syslog(pamh, LOG_ERR, "authnft: failed to store session data");
         free(sd);
@@ -191,8 +193,10 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     int rc = nft_handler_setup(pamh, user, cg_id,
                                norm_ip[0] ? norm_ip : NULL,
                                sd->claims_tag[0] ? sd->claims_tag : NULL);
-    if (rc == PAM_SUCCESS)
+    if (rc == PAM_SUCCESS) {
         (void)session_file_write(pamh, sd, user, session_pid);
+        event_open_emit(pamh, sd, user, session_pid);
+    }
     return rc;
 }
 
@@ -224,6 +228,7 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
                    "authnft: cleanup failed for %s — element may persist", user);
 
     (void)session_file_remove(pamh, sd->cg_id);
+    event_close_emit(pamh, sd, user);
 
     return PAM_SUCCESS;
 }

@@ -89,10 +89,12 @@ On session open, the module:
    and **stat**(2) on */sys/fs/cgroup/\<path\>* (fallback
    */sys/fs/cgroup/unified/\<path\>*).
 7. Persists session state (cgroup inode + normalized remote IP +
-   optional sanitized claims tag) in PAM data under the key
-   *authnft_cg_id* so **pam_sm_close_session** can delete the exact
-   element inserted from the correct set. The key name is retained
-   for compatibility; the stored value shape is an internal ABI.
+   optional sanitized claims tag + correlation token) in PAM data
+   under the key *authnft_cg_id* so **pam_sm_close_session** can
+   delete the exact element inserted from the correct set and reuse
+   the correlation token in the close-side audit event. The key name
+   is retained for compatibility; the stored value shape is an
+   internal ABI.
 8. Verifies the user is a member of the **authnft** group. Non-members
    pass through with **PAM_SUCCESS**.
 9. Validates the fragment at */etc/authnft/users/\<user\>*: it must
@@ -153,6 +155,25 @@ into. Cleanup failures are logged but do not prevent session teardown.
 :   If set to a non-empty value, **sandbox_apply** becomes a no-op.
     Identical effect to passing **AUTHNFT_NO_SANDBOX=1** as a PAM
     module argument.
+
+**AUTHNFT_CORRELATION**
+:   Read from the PAM environment (set via **pam_putenv**(3) by an
+    upstream module) at **pam_sm_open_session** time. Used as the
+    *AUTHNFT_CORRELATION* field in the journald audit events
+    (AUTHNFT_EVENT=open, AUTHNFT_EVENT=close) to join session
+    lifecycle events to the authentication event that produced
+    them. Sanitized to *[A-Za-z0-9_.:-]* and truncated at 64 bytes.
+    If absent or empty-after-sanitization, pam_authnft synthesizes
+    a unique token for the session. See
+    **docs/INTEGRATIONS.txt** §6.2 for the full contract.
+
+# AUDIT EVENTS
+
+pam_authnft emits structured events to the systemd journal at
+session open and close with *SYSLOG_IDENTIFIER=pam_authnft*. Filter
+with `journalctl -t pam_authnft`. The two events are joined by a
+shared *AUTHNFT_CORRELATION* token. Fields and SIEM integration
+guidance: **docs/INTEGRATIONS.txt** §6.2.
 
 # RETURN VALUES
 

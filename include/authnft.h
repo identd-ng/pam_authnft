@@ -30,17 +30,24 @@
 #define MAX_USER_LEN 32
 #define IP_STR_MAX   64   /* INET6_ADDRSTRLEN (46) + headroom */
 #define CLAIMS_TAG_MAX 192 /* sanitized payload length cap */
+#define CORRELATION_ID_MAX 64 /* journal/audit correlation token */
 
 /*
  * Session data persisted via pam_set_data("authnft_cg_id", ...).
  * The key name predates this struct; it is kept for compatibility with the
  * documented lifecycle invariant. `remote_ip[0] == '\0'` marks the cg-only
  * fallback path, where no src_ip was bound.
+ *
+ * `correlation_id` is a short opaque token used to join the open and
+ * close audit events for the same session across the systemd journal.
+ * Captured from PAM env "AUTHNFT_CORRELATION" (sanitized) or synthesized
+ * at open_session if the env var is absent.
  */
 typedef struct {
     uint64_t cg_id;
     char     remote_ip[IP_STR_MAX];
     char     claims_tag[CLAIMS_TAG_MAX];  /* "" if no keyring source configured */
+    char     correlation_id[CORRELATION_ID_MAX];
 } authnft_session_t;
 
 /*
@@ -145,6 +152,33 @@ int session_file_write(pam_handle_t *pamh, const authnft_session_t *sd,
  * a stale entry). Returns 0 on success or ENOENT, -1 otherwise.
  */
 int session_file_remove(pam_handle_t *pamh, uint64_t cg_id);
+
+/*
+ * event_correlation_capture:
+ * Populates `out` with a correlation token usable to join open and close
+ * audit events for the same session. If PAM env "AUTHNFT_CORRELATION" is
+ * set by an upstream producer (e.g., identity broker), its sanitized value
+ * is used; otherwise a timestamp+pid+random token is synthesized. Output
+ * is always NUL-terminated and always non-empty.
+ *
+ * Sanitization character class: [A-Za-z0-9_.:-]. Characters outside the
+ * class are dropped (not substituted) to keep tokens short and avoid
+ * journal-field confusion.
+ */
+void event_correlation_capture(pam_handle_t *pamh, char *out, size_t out_sz);
+
+/*
+ * event_open_emit / event_close_emit:
+ * Emit a structured journal entry via sd_journal_send(3). Fields are
+ * documented in docs/INTEGRATIONS.txt §6.2. On sd_journal_send failure
+ * (e.g., /run/systemd/journal/socket unreachable), falls back to
+ * pam_syslog(LOG_INFO) so the event still lands in a readable log stream.
+ * Never fails the session.
+ */
+void event_open_emit(pam_handle_t *pamh, const authnft_session_t *sd,
+                     const char *user, int session_pid);
+void event_close_emit(pam_handle_t *pamh, const authnft_session_t *sd,
+                      const char *user);
 
 /*
  * util_normalize_ip:
