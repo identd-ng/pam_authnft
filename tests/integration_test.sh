@@ -46,8 +46,10 @@ if nft list tables 2>/dev/null | grep -q "inet authnft"; then
     nft delete table inet authnft
 fi
 
+GROUP_FRAG_10_8=""
 cleanup() {
     rm -f "$RULES_DIR/$TEST_USER" "$PAM_TEST_CONF"
+    [[ -n "$GROUP_FRAG_10_8" ]] && rm -f "$GROUP_FRAG_10_8"
     if [[ $USER_CREATED -eq 1 ]]; then
         userdel "$TEST_USER" 2>/dev/null || true
     fi
@@ -160,5 +162,38 @@ if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" close_session > /dev
     fail "close_session without prior open did not return PAM_SUCCESS"
 fi
 pass "close_session best-effort semantics preserved"
+
+# 10.8: Multi-fragment composition via nftables `include` directive.
+# libnftables resolves `include` transitively when processing a fragment;
+# a user fragment that includes a group-level fragment gets both files'
+# rules loaded into the filter chain. No pam_authnft code change enables
+# this — the test exists to catch a future libnftables parser regression.
+printf "${YELLOW}10.8: Multi-fragment composition (transitive include)${RESET}\n"
+GROUP_FRAG_10_8="/etc/authnft/composed-10-8.nft"
+cat > "$GROUP_FRAG_10_8" <<NFT
+add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 counter accept comment "AUTHNFT-IT-GROUP"
+NFT
+chown root:root "$GROUP_FRAG_10_8"
+chmod 644 "$GROUP_FRAG_10_8"
+cat > "$FRAGMENT" <<NFT
+include "$GROUP_FRAG_10_8"
+add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 counter accept comment "AUTHNFT-IT-USER"
+NFT
+chown root:root "$FRAGMENT"
+chmod 644 "$FRAGMENT"
+if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/null 2>&1; then
+    fail "Composed-fragment open_session failed — check journalctl -t authnft"
+fi
+CHAIN_STATE=$(nft list chain inet authnft filter 2>&1)
+if ! echo "$CHAIN_STATE" | grep -q "AUTHNFT-IT-GROUP"; then
+    fail "Transitive include did not land the group fragment's rule"
+fi
+if ! echo "$CHAIN_STATE" | grep -q "AUTHNFT-IT-USER"; then
+    fail "User fragment's own rule did not land alongside the include"
+fi
+# Close in a new handle; per invariant #6 this no-ops. Residual set
+# element is flushed by the top-of-script nft delete on the next run.
+pamtester authnft_test "$TEST_USER" close_session > /dev/null 2>&1 || true
+pass "Composition via include resolved: group and user rules both applied"
 
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"

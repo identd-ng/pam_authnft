@@ -150,6 +150,13 @@ top level and run as nftables commands. A minimal example:
 add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 accept
 ```
 
+A fragment may `include` other files (e.g., a shared group-level fragment) to
+compose policy; libnftables resolves includes transitively. Ownership checks
+apply to the per-user fragment only — the admin is responsible for the
+permissions of every transitively included file. See
+[docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §4.6 for the composition pattern,
+security notes, and cycle-detection guidance.
+
 See `examples/examples_generator.sh -f` for port-restricted, masquerade, and
 time-limited variants.
 

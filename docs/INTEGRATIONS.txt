@@ -315,6 +315,63 @@ net. Primary cleanup is close_session. Fragments MUST NOT set their
 own elements in session_map_ipv{4,6}/session_map_cg; these sets are
 owned by pam_authnft.
 
+4.6 Composing fragments via nftables `include`
+
+libnftables resolves `include` directives transitively when processing
+a user fragment. A per-user fragment MAY pull in shared rules from a
+common file, letting a site maintain base policy once and override or
+extend it per user.
+
+Convention: keep shared fragments under a subdirectory of
+/etc/authnft/ (for example, /etc/authnft/groups/) and reference them by
+absolute path from the user fragment:
+
+    # /etc/authnft/groups/sre-oncall.nft
+    add rule inet authnft filter \
+        meta cgroup . ip saddr @session_map_ipv4 \
+        ct state new tcp dport { 22, 443, 9090 } accept
+
+    # /etc/authnft/users/alice
+    include "/etc/authnft/groups/sre-oncall.nft"
+    add rule inet authnft filter \
+        meta cgroup . ip saddr @session_map_ipv4 \
+        ct state new tcp dport 5432 accept
+
+Both files' rules land in `chain inet authnft filter` on open_session.
+
+Security considerations:
+
+    pam_authnft enforces ownership (UID 0) and non-world-writable
+    mode on the per-user fragment at /etc/authnft/users/<username>
+    (see §4.1). It does NOT recurse into `include`d files. The admin
+    is responsible for ensuring every transitively included file is
+    also root-owned and not world-writable. A root-owned user
+    fragment that includes an attacker-controlled file gives the
+    attacker control over the loaded ruleset.
+
+    As a safe default, include only from paths under /etc/authnft/.
+    Do not accept include paths that are writable by any non-root
+    account.
+
+    libnftables does not detect include cycles. A fragment that
+    includes itself (directly or through a chain of other fragments)
+    will exhaust stack and abort the session transaction. Cycle
+    avoidance is the admin's responsibility — a linter such as
+    `nft -c -f /etc/authnft/users/<username>` will catch cycles at
+    install time.
+
+Operational notes:
+
+    Rules added via `include` are indistinguishable from inline rules
+    in `nft list` output. If provenance matters for audit, add a
+    one-line `comment "..."` on each rule identifying the source
+    fragment.
+
+    Shared fragments are re-read on every open_session; a change to
+    a group fragment takes effect on the next session open for every
+    user whose fragment includes it. There is no signal mechanism to
+    reload currently-active sessions.
+
 
 5. Systemd scope and slice contracts
 ------------------------------------
