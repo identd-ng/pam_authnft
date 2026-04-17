@@ -87,6 +87,25 @@ Invariants to preserve
    filter chain.
 
 
+Concurrency
+-----------
+
+Multiple pam_authnft invocations can run in parallel (e.g., simultaneous
+sshd sessions). The `add table`, `add set`, and `add chain` statements
+emitted by every invocation are byte-identical, so libnftables accepts
+them idempotently regardless of interleaving. Session elements carry
+distinct `cg_id` keys and do not collide. The `add element` path relies
+on nftables' own atomicity for a single-set insert; there is no
+cross-session critical section in module code.
+
+Fragments may use nftables `include` directives (integration test 10.8
+covers transitive resolution). Invariant #5's ownership check is
+applied only to the fragment itself — files pulled in transitively are
+NOT re-validated. pam_authnft logs a LOG_INFO on open when a fragment
+contains an `include` directive; administrators remain responsible for
+ensuring included files are root-owned and not world-writable.
+
+
 Seccomp allowlist
 -----------------
 
@@ -113,13 +132,15 @@ not only sessions that exercise the feature.
 
 Unconditional syscalls for always-on observability paths (the
 session-identity file under `/run/authnft/sessions/`) are similarly
-unconditional. The write path uses `rename(2)` (or `renameat2(2)`
-depending on the host's glibc dispatch) at open; the cleanup path
-uses `unlink(2)` (or `unlinkat(2)`) at close. All four variants are
-allowlisted because glibc routes to different syscalls on different
-kernel / libc combinations — observed empirically via `make trace`
-on Arch (bare `rename` / `unlink`) vs Fedora (some paths reach the
-`*at` variants). All four are read/write operations on a known
+unconditional. The write path uses `rename(2)` (or `renameat(2)` /
+`renameat2(2)` depending on the host's libc dispatch) at open; the
+cleanup path uses `unlink(2)` (or `unlinkat(2)`) at close. All five
+variants are allowlisted because glibc and musl route to different
+syscalls on different kernel / libc combinations — observed
+empirically via `make trace` on Arch (bare `rename` / `unlink`) vs
+Fedora (some paths reach the `*at` variants); musl and glibc < 2.28
+route `rename(3)` through `renameat(AT_FDCWD, ...)`. All five are
+read/write operations on a known
 root-owned tmpfs directory; they do not expand the capability
 surface the module already has for its primary fragment-loading
 work.

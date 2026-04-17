@@ -44,10 +44,15 @@ The module exports only **pam_sm_open_session** and
     succeeds and the value differs from a parseable *PAM_RHOST*, the
     module logs a **LOG_WARNING** of the form
     *"PAM_RHOST/kernel peer divergence: app='X' kernel='Y' — trusting
-    kernel"*. Common causes: sshd behind a TCP load balancer (PROXY
+    kernel"*. If *PAM_RHOST* was set but unparseable and the kernel
+    lookup succeeds, a **LOG_WARNING** is emitted noting the silent
+    substitution. Common causes: sshd behind a TCP load balancer (PROXY
     protocol not terminated) or **UseDNS yes**. If the kernel lookup
     fails (no ESTABLISHED TCP socket on the session PID, netlink denied),
-    the module falls through to **rhost_policy=lax** semantics.
+    the module falls through to **rhost_policy=lax** semantics. The
+    inode scan is capped at **INODES_CAP** (64); if the session PID
+    holds more socket inodes, a **LOG_WARNING** is emitted and the
+    lookup may miss the session's TCP socket.
 
 **claims_env=NAME**
 :   Look up PAM environment variable *NAME* for a kernel-keyring serial
@@ -124,7 +129,9 @@ into. Cleanup failures are logged but do not prevent session teardown.
     */etc/authnft/groups/*); libnftables resolves includes
     transitively. pam_authnft does not recurse ownership checks into
     included files — the admin MUST ensure every transitively
-    included file is also root-owned and not world-writable. See
+    included file is also root-owned and not world-writable. When a
+    fragment contains an **include** directive, the module emits a
+    **LOG_INFO** reminder about this responsibility. See
     **docs/INTEGRATIONS.txt** §4.6 for the composition pattern and
     a cycle-detection note.
 

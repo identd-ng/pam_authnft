@@ -110,12 +110,17 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
 
     if (kernel_rhost) {
         char kern_ip[IP_STR_MAX] = {0};
-        if (peer_lookup_tcp(session_pid, kern_ip, sizeof(kern_ip))) {
+        if (peer_lookup_tcp(pamh, session_pid, kern_ip, sizeof(kern_ip))) {
             if (rhost_parsed && strcmp(kern_ip, norm_ip) != 0) {
                 pam_syslog(pamh, LOG_WARNING,
                            "authnft: PAM_RHOST/kernel peer divergence: "
                            "app='%s' kernel='%s' — trusting kernel",
                            norm_ip, kern_ip);
+            } else if (!rhost_parsed && rhost) {
+                pam_syslog(pamh, LOG_WARNING,
+                           "authnft: PAM_RHOST '%s' unparseable, "
+                           "using kernel-derived peer %s",
+                           rhost, kern_ip);
             }
             memcpy(norm_ip, kern_ip, sizeof(norm_ip));
             rhost_parsed = 1;

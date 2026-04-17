@@ -257,7 +257,7 @@ static void run_peer_lookup_test(void) {
     }
 
     char peer[IP_STR_MAX] = {0};
-    int got = peer_lookup_tcp(getpid(), peer, sizeof(peer));
+    int got = peer_lookup_tcp(NULL, getpid(), peer, sizeof(peer));
 
     close(as); close(cs); close(ls);
 
