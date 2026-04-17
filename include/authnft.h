@@ -124,8 +124,9 @@ ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz);
 /*
  * peer_lookup_tcp:
  * Derives the remote IP of an ESTABLISHED TCP socket owned by `pid` by
- * issuing a SOCK_DIAG_BY_FAMILY query over NETLINK_SOCK_DIAG and matching
- * returned inodes against socket inodes walked from /proc/<pid>/fd/.
+ * issuing a SOCK_DIAG_BY_FAMILY query over NETLINK_SOCK_DIAG (AF_INET6
+ * first, then AF_INET) and matching returned inodes against socket inodes
+ * walked from /proc/<pid>/fd/.
  * Writes a canonical IP literal (inet_ntop form) into out[out_sz].
  * Returns 1 on success, 0 on any failure (no TCP socket, netlink denied,
  * multiple ambiguous sockets, buffer too small). Uses only syscalls in
@@ -185,6 +186,8 @@ void event_close_emit(pam_handle_t *pamh, const authnft_session_t *sd,
  * Validates an IP literal and writes a canonical form to out[out_sz].
  * Accepts IPv4, IPv6, and IPv6 link-local with a zone suffix ("%zone");
  * the zone is stripped because nftables ip6 saddr matches do not accept it.
+ * IPv6 v4-mapped addresses (::ffff:a.b.c.d) are extracted to plain IPv4
+ * so the element lands in session_map_ipv4, not session_map_ipv6.
  * Returns 1 on success, 0 on any rejection (NULL, empty, hostname, overlong,
  * malformed literal).
  */

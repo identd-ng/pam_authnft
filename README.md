@@ -79,10 +79,11 @@ On session open:
 5. Validates and loads the user's root-owned fragment at
    `/etc/authnft/users/<username>`.
 6. Inserts a session element into one of three named sets:
-   - `session_map_ipv4` — `{ cgroup_id . src_ip }` when PAM_RHOST parsed
-     as IPv4
-   - `session_map_ipv6` — `{ cgroup_id . src_ip }` when PAM_RHOST parsed
-     as IPv6
+   - `session_map_ipv4` — `{ cgroup_id . src_ip }` when PAM_RHOST parses
+     as IPv4, or as a v4-mapped v6 address extracted to plain IPv4
+     (common when sshd listens on `::` with `IPV6_V6ONLY=0`)
+   - `session_map_ipv6` — `{ cgroup_id . src_ip }` when PAM_RHOST parses
+     as pure IPv6
    - `session_map_cg`   — `{ cgroup_id }` only, when PAM_RHOST was absent
      or could not be normalised (default `rhost_policy=lax` behaviour)
 7. Writes `/run/authnft/sessions/<cg_id>.json` (0644 root:root) so
