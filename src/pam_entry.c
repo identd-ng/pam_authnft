@@ -56,12 +56,26 @@ int util_normalize_ip(const char *in, char *out, size_t out_sz) {
     memcpy(core, in, core_len);
     core[core_len] = '\0';
 
-    if (inet_pton(AF_INET, core, addr_buf) != 1 &&
-        inet_pton(AF_INET6, core, addr_buf) != 1)
-        return 0;
+    if (inet_pton(AF_INET, core, addr_buf) == 1) {
+        memcpy(out, core, core_len + 1);
+        return 1;
+    }
 
-    memcpy(out, core, core_len + 1);
-    return 1;
+    if (inet_pton(AF_INET6, core, addr_buf) == 1) {
+        /* v4-mapped v6 (::ffff:a.b.c.d) → extract as plain IPv4 so the
+         * element lands in session_map_ipv4 rather than session_map_ipv6.
+         * Common when sshd listens on :: with IPV6_V6ONLY=0. */
+        const struct in6_addr *a6 = (const struct in6_addr *)addr_buf;
+        if (IN6_IS_ADDR_V4MAPPED(a6)) {
+            if (!inet_ntop(AF_INET, &a6->s6_addr[12], out, (socklen_t)out_sz))
+                return 0;
+            return 1;
+        }
+        memcpy(out, core, core_len + 1);
+        return 1;
+    }
+
+    return 0;
 }
 
 PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
@@ -111,6 +125,12 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     if (kernel_rhost) {
         char kern_ip[IP_STR_MAX] = {0};
         if (peer_lookup_tcp(pamh, session_pid, kern_ip, sizeof(kern_ip))) {
+            /* Normalize kernel peer (v4-mapped v6 → plain v4) so the
+             * divergence comparison and set selection use the same form
+             * as the PAM_RHOST path. */
+            char tmp_ip[IP_STR_MAX];
+            if (util_normalize_ip(kern_ip, tmp_ip, sizeof(tmp_ip)))
+                memcpy(kern_ip, tmp_ip, sizeof(kern_ip));
             if (rhost_parsed && strcmp(kern_ip, norm_ip) != 0) {
                 pam_syslog(pamh, LOG_WARNING,
                            "authnft: PAM_RHOST/kernel peer divergence: "

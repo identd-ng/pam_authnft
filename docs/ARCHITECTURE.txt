@@ -64,8 +64,10 @@ path. See `keyctl(2)` and `keyrings(7)`.
 
 `rhost_policy=kernel` is the strongest option: the module derives the
 peer IP from the session process's own ESTABLISHED TCP socket via
-NETLINK_SOCK_DIAG (see `ss(8)`), and logs a warning when the
-kernel-reported address diverges from `PAM_RHOST`. This catches
+NETLINK_SOCK_DIAG (see `ss(8)`), querying AF_INET6 first then AF_INET.
+The result is normalized through `util_normalize_ip` (including
+v4-mapped v6 extraction) and the module logs a warning when the
+normalized kernel-reported address diverges from `PAM_RHOST`. This catches
 PROXY-protocol / load-balancer misconfigurations and `UseDNS`
 hostname aliasing for free, and removes the PAM caller from the trust
 path for the src_ip binding.
@@ -77,7 +79,8 @@ Open-session sequence
     1. PAM_USER validated (util_is_valid_username)
     2. Root short-circuits to PAM_SUCCESS
     3. PAM_RHOST retrieved and normalized (util_normalize_ip): IPv4/IPv6
-       literals accepted; IPv6 zone suffix "%zone" stripped; hostnames
+       literals accepted; IPv6 zone suffix "%zone" stripped; v4-mapped
+       v6 addresses (::ffff:a.b.c.d) extracted to plain IPv4; hostnames
        and unparseable values fall through (lax) or deny (strict)
     4. sandbox_apply installs SCMP_ACT_KILL filter (PR_SET_NO_NEW_PRIVS
        set first)

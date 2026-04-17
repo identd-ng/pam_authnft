@@ -25,12 +25,14 @@ The module exports only **pam_sm_open_session** and
 # OPTIONS
 
 **rhost_policy=lax** (default)
-:   If *PAM_RHOST* parses as an IPv4 or IPv6 literal, bind the session
-    element into *session_map_ipv4* / *session_map_ipv6* as
-    *{ cgroup_inode . src_ip }*. Otherwise — *PAM_RHOST* missing,
-    a hostname (*UseDNS yes* in sshd), or unparseable — fall back to
-    *session_map_cg*, which is keyed on *cgroup_inode* alone. Session
-    identity is still enforced; only the src_ip leg is dropped.
+:   If *PAM_RHOST* parses as an IPv4 or IPv6 literal, it is normalized
+    to canonical form (IPv6 v4-mapped addresses are extracted to plain
+    IPv4) and the session element is bound into *session_map_ipv4* or
+    *session_map_ipv6* as *{ cgroup_inode . src_ip }*. Otherwise —
+    *PAM_RHOST* missing, a hostname (*UseDNS yes* in sshd), or
+    unparseable — fall back to *session_map_cg*, which is keyed on
+    *cgroup_inode* alone. Session identity is still enforced; only the
+    src_ip leg is dropped.
 
 **rhost_policy=strict**
 :   Restore the pre-0.2 behaviour: a valid IP literal in *PAM_RHOST* is
@@ -38,11 +40,12 @@ The module exports only **pam_sm_open_session** and
 
 **rhost_policy=kernel**
 :   Derive the peer IP from the session process's own ESTABLISHED TCP
-    socket via **NETLINK_SOCK_DIAG** (see **ss**(8)). The
-    kernel-reported address is authoritative and cannot be spoofed by
-    a misconfigured or hostile PAM caller. If the kernel lookup
-    succeeds and the value differs from a parseable *PAM_RHOST*, the
-    module logs a **LOG_WARNING** of the form
+    socket via **NETLINK_SOCK_DIAG** (see **ss**(8)), querying AF_INET6
+    first then AF_INET. The kernel-reported address is normalized
+    (including v4-mapped v6 extraction) and is authoritative — it cannot
+    be spoofed by a misconfigured or hostile PAM caller. If the kernel
+    lookup succeeds and the normalized value differs from a parseable
+    *PAM_RHOST*, the module logs a **LOG_WARNING** of the form
     *"PAM_RHOST/kernel peer divergence: app='X' kernel='Y' — trusting
     kernel"*. If *PAM_RHOST* was set but unparseable and the kernel
     lookup succeeds, a **LOG_WARNING** is emitted noting the silent

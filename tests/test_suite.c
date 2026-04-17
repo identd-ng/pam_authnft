@@ -187,7 +187,7 @@ static void run_rhost_normalization_test(void) {
         { "192.0.2.1",       1, "192.0.2.1"  },
         { "2001:db8::1",     1, "2001:db8::1"},
         { "fe80::1%eth0",    1, "fe80::1"    },  /* zone stripped */
-        { "::ffff:10.0.0.1", 1, "::ffff:10.0.0.1" },
+        { "::ffff:10.0.0.1", 1, "10.0.0.1" },          /* v4-mapped → plain v4 */
         { "bastion.example", 0, NULL },           /* UseDNS hostname */
         { "not an ip",       0, NULL },
         { "",                0, NULL },

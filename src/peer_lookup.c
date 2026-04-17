@@ -185,7 +185,7 @@ int peer_lookup_tcp(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz) {
 
     int found = 0;
     for (int i = 0; i < 2 && !found; i++) {
-        int family = (i == 0) ? AF_INET : AF_INET6;
+        int family = (i == 0) ? AF_INET6 : AF_INET;
         if (send_diag_request(fd, family) == 0 &&
             scan_diag_reply(fd, inodes, n, out, out_sz) == 1) {
             found = 1;

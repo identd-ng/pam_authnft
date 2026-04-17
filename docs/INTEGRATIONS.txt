@@ -268,6 +268,11 @@ including the fragment:
     session_map_ipv6   typeof meta cgroup . ip6 saddr; flags timeout
     session_map_cg     typeof meta cgroup;             flags timeout
 
+A session element goes into exactly one set: IPv4 addresses (including
+v4-mapped v6 addresses extracted to plain IPv4 during normalization)
+land in session_map_ipv4; pure IPv6 addresses land in session_map_ipv6;
+absent or unparseable PAM_RHOST values land in session_map_cg.
+
 Fragments MAY reference these sets in match expressions:
 
     add rule inet authnft filter \
@@ -455,9 +460,11 @@ Field semantics:
                 renames bump to v=2 under the §8 rules.
     cg_id       uint64, cgroupv2 inode. Matches the filename.
     user        string, PAM_USER. Charset [A-Za-z0-9._-], max 32.
-    remote_ip   string, normalized source IP. "" on the cg-only path
-                (rhost_policy=lax with unparseable PAM_RHOST) or when
-                rhost_policy=kernel failed and fell back.
+    remote_ip   string, normalized source IP in canonical form; v4-mapped
+                v6 addresses are extracted to plain IPv4 literals. "" on
+                the cg-only path (rhost_policy=lax with unparseable
+                PAM_RHOST) or when rhost_policy=kernel failed and fell
+                back.
     fragment    string, absolute path to the per-user nftables
                 fragment that was candidate for loading. Readers
                 cross-referencing `nft list table inet authnft` can
