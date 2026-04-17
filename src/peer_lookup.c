@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -32,12 +33,14 @@
  * No additions to src/sandbox.c required.
  */
 
-#define INODES_CAP 64          /* sshd-session rarely holds this many */
 #define RECV_BUF   (8 * 1024)
 
 /* Collect socket inodes held by `pid` by readlink-ing each entry under
- * /proc/<pid>/fd. Returns the count or -1 on failure. */
-static int collect_socket_inodes(pid_t pid, ino_t *inodes, size_t cap) {
+ * /proc/<pid>/fd. Returns the count or -1 on failure. On exit,
+ * *truncated is set to 1 if at least one socket inode was observed
+ * beyond `cap` and dropped. */
+static int collect_socket_inodes(pid_t pid, ino_t *inodes, size_t cap,
+                                  int *truncated) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/fd", (int)pid);
 
@@ -46,7 +49,7 @@ static int collect_socket_inodes(pid_t pid, ino_t *inodes, size_t cap) {
 
     int count = 0;
     struct dirent *de;
-    while ((de = readdir(d)) != NULL && (size_t)count < cap) {
+    while ((de = readdir(d)) != NULL) {
         if (de->d_name[0] == '.') continue;
         if (strlen(de->d_name) > 8) continue;  /* fd numbers, never long */
 
@@ -60,8 +63,13 @@ static int collect_socket_inodes(pid_t pid, ino_t *inodes, size_t cap) {
 
         /* "socket:[12345]" */
         unsigned long ino;
-        if (sscanf(target, "socket:[%lu]", &ino) == 1)
-            inodes[count++] = (ino_t)ino;
+        if (sscanf(target, "socket:[%lu]", &ino) != 1) continue;
+
+        if ((size_t)count >= cap) {
+            *truncated = 1;
+            break;
+        }
+        inodes[count++] = (ino_t)ino;
     }
     closedir(d);
     return count;
@@ -157,13 +165,20 @@ static int scan_diag_reply(int fd, const ino_t *inodes, int n_inodes,
     }
 }
 
-int peer_lookup_tcp(pid_t pid, char *out, size_t out_sz) {
+int peer_lookup_tcp(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz) {
     if (!out || out_sz == 0) return 0;
     out[0] = '\0';
 
     ino_t inodes[INODES_CAP];
-    int n = collect_socket_inodes(pid, inodes, INODES_CAP);
+    int truncated = 0;
+    int n = collect_socket_inodes(pid, inodes, INODES_CAP, &truncated);
     if (n <= 0) return 0;
+    if (truncated && pamh) {
+        pam_syslog(pamh, LOG_WARNING,
+                   "authnft: /proc/%d/fd has more than %d socket inodes — "
+                   "peer lookup may miss the session's TCP socket",
+                   (int)pid, INODES_CAP);
+    }
 
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
     if (fd < 0) return 0;

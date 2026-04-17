@@ -100,10 +100,13 @@ int sandbox_apply(pam_handle_t *pamh) {
      * Empirically on Arch glibc 2.43 + Linux 6.18, rename() and unlink()
      * both go through the *legacy* single-arg syscalls (SYS_rename,
      * SYS_unlink), not their newer *at variants. On other glibc / libc
-     * versions they may route through renameat2 / unlinkat. Allowlist
-     * both so the module is portable across that split without a
-     * distro-specific build flag. See docs/INTEGRATIONS.txt §5.6. */
+     * versions they may route through renameat / renameat2 / unlinkat.
+     * musl in particular routes rename(3) through renameat(AT_FDCWD, ...),
+     * and glibc < 2.28 did the same. Allowlist every variant so the
+     * module is portable without a distro-specific build flag. See
+     * docs/INTEGRATIONS.txt §5.6. */
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(rename), 0);
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(renameat), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(renameat2), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(unlink), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(unlinkat), 0);

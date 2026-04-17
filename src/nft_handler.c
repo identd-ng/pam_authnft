@@ -13,6 +13,33 @@
 #include <pwd.h>
 #include <string.h>
 
+/* Scan the fragment for a top-level `include` directive and log an
+ * informational warning. libnftables resolves transitive includes
+ * (integration test 10.8), but invariant #5 only validates the
+ * fragment itself — files it pulls in are NOT ownership-checked.
+ * The admin is responsible for making sure they are root-owned and
+ * not world-writable. */
+static void warn_if_fragment_includes(pam_handle_t *pamh, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\0' || *p == '\n') continue;
+        if (strncmp(p, "include", 7) == 0 &&
+            (p[7] == ' ' || p[7] == '\t' || p[7] == '"')) {
+            pam_syslog(pamh, LOG_INFO,
+                       "authnft: fragment %s uses 'include' — "
+                       "transitively included files are not ownership-checked; "
+                       "ensure they are root-owned and not world-writable",
+                       path);
+            break;
+        }
+    }
+    fclose(f);
+}
+
 int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                       const char *remote_ip, const char *claims_tag) {
     struct nft_ctx *ctx;
@@ -72,6 +99,8 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
                   user_conf_path);
         return PAM_AUTH_ERR;
     }
+
+    warn_if_fragment_includes(pamh, user_conf_path);
 
     /* Nftables transaction: idempotent table/set/chain creation followed by
      * inclusion of the user fragment and insertion of the session element.

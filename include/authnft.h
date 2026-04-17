@@ -31,6 +31,7 @@
 #define IP_STR_MAX   64   /* INET6_ADDRSTRLEN (46) + headroom */
 #define CLAIMS_TAG_MAX 192 /* sanitized payload length cap */
 #define CORRELATION_ID_MAX 64 /* journal/audit correlation token */
+#define INODES_CAP 64      /* cap on /proc/<pid>/fd inode scan in peer_lookup */
 
 /*
  * Session data persisted via pam_set_data("authnft_cg_id", ...).
@@ -126,13 +127,15 @@ ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz);
  * Derives the remote IP of an ESTABLISHED TCP socket owned by `pid` by
  * issuing a SOCK_DIAG_BY_FAMILY query over NETLINK_SOCK_DIAG and matching
  * returned inodes against socket inodes walked from /proc/<pid>/fd/.
- * Writes a canonical IP literal (inet_ntop form) into out[out_sz].
- * Returns 1 on success, 0 on any failure (no TCP socket, netlink denied,
- * multiple ambiguous sockets, buffer too small). Uses only syscalls in
- * the existing seccomp allowlist; safe to call post-sandbox as well but
- * currently invoked pre-sandbox in lockstep with PAM_RHOST parsing.
+ * At most INODES_CAP inodes are scanned; if more exist, a LOG_WARNING is
+ * emitted via pamh (NULL-safe for unit tests). Writes a canonical IP
+ * literal (inet_ntop form) into out[out_sz]. Returns 1 on success, 0 on
+ * any failure (no TCP socket, netlink denied, multiple ambiguous sockets,
+ * buffer too small). Uses only syscalls in the existing seccomp allowlist;
+ * safe to call post-sandbox as well but currently invoked pre-sandbox in
+ * lockstep with PAM_RHOST parsing.
  */
-int peer_lookup_tcp(pid_t pid, char *out, size_t out_sz);
+int peer_lookup_tcp(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz);
 
 /*
  * session_file_write:
