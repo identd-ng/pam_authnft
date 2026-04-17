@@ -63,8 +63,10 @@ show_firewall() {
     echo "$HR"
     echo ">> EXAMPLE 4: NAT MASQUERADE <<"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "# In postrouting, ip saddr is the server's own IP — not the client's.\n"
+    printf "# Use session_map_cg (cgroup-only) to match outbound traffic from this session.\n"
     printf "add chain inet authnft %s_nat { type nat hook postrouting priority srcnat; }\n" "$USER_NAME"
-    printf "add rule inet authnft %s_nat meta cgroup . ip saddr @session_map_ipv4 masquerade\n\n" "$USER_NAME"
+    printf "add rule inet authnft %s_nat meta cgroup @session_map_cg masquerade\n\n" "$USER_NAME"
 
     echo "$HR"
     echo ">> EXAMPLE 5: TIME-RESTRICTED ACCESS <<"
