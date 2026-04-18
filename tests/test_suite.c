@@ -100,16 +100,36 @@ static void run_nft_syntax_test(void) {
     nft_ctx_free(ctx);
 }
 
-/* Stage 5: util_get_cgroup_id resolves the cgroupv2 inode for a live PID */
+/* Stage 5: util_get_cgroup_path resolves the cgroupv2 path and enforces
+ * the pam_authnft depth invariant (HANDOFF §3.1/§3.2). The test binary
+ * itself runs outside authnft.slice — under user.slice or system.slice
+ * depending on how it was invoked — so util_get_cgroup_path MUST reject
+ * this pid with -1 and leave the output buffer empty. That rejection IS
+ * the thing under test: it proves the invariant check actually fires
+ * before any path-to-inode resolution reaches the data plane. A
+ * positive-resolution test for a real session lives in the integration
+ * suite (stage 10.11), which drives a genuine pamtester session. */
 static void run_cgroup_logic_test(void) {
-    printf("[STAGE 5] cgroupv2 inode resolution...\n");
-    uint64_t cg_id = 0;
-    if (util_get_cgroup_id(getpid(), &cg_id) == 0 && cg_id > 0)
-        printf("[PASS] inode=%lu\n", (unsigned long)cg_id);
-    else {
-        fprintf(stderr, "[FAIL] Could not resolve cgroup ID.\n");
+    printf("[STAGE 5] cgroup path resolution + invariant enforcement...\n");
+    char buf[CGROUP_PATH_MAX] = {0};
+    /* Sentinel to catch callees that forget to NUL-init on failure. */
+    memset(buf, 0xAA, sizeof(buf));
+    int r = util_get_cgroup_path(NULL, getpid(), buf, sizeof(buf));
+    if (r == 0) {
+        fprintf(stderr,
+                "[FAIL] util_get_cgroup_path accepted test-binary pid "
+                "(buf=%s) — the invariant check is not firing. Test binary "
+                "must not run under authnft.slice.\n",
+                buf);
         exit(1);
     }
+    if (buf[0] != '\0') {
+        fprintf(stderr,
+                "[FAIL] util_get_cgroup_path rejected (rc=%d) but left "
+                "non-empty buffer — contract violation.\n", r);
+        exit(1);
+    }
+    printf("[PASS] invariant check rejected non-authnft.slice path\n");
 }
 
 /* Stage 6: binary hardening flags are present in the compiled .so.
@@ -129,51 +149,18 @@ static void run_checksec_test(void) {
         exit(1);
 }
 
-/* Stage 7: nft_handler_setup loads a valid root-owned fragment without error */
+/* Stage 7: nft_handler_setup fragment load.
+ * Post-K1, nft_handler_setup takes a cg_path string that nftables resolves
+ * to a cgroupv2 inode at insert time. The unit-test binary cannot create a
+ * real authnft.slice scope, so a standalone call with a fabricated path would
+ * fail at the kernel level ("cgroupv2 path fails: No such file or directory").
+ * End-to-end fragment-load testing lives in integration stage 10.2 and the
+ * adversarial 10.11, both of which drive a real pamtester session whose scope
+ * exists on the cgroupfs at insert time. This stage is retained as a
+ * placeholder to keep stage numbering stable. */
 static void run_path_resolution_test(void) {
     printf("[STAGE 7] Fragment path resolution and load...\n");
-    cap_t caps = cap_get_proc();
-    cap_flag_value_t val;
-    cap_get_flag(caps, CAP_NET_ADMIN, CAP_EFFECTIVE, &val);
-    cap_free(caps);
-    if (val != CAP_SET) {
-        printf("[SKIP] Requires CAP_NET_ADMIN.\n");
-        return;
-    }
-
-    const char *test_user = getenv("AUTHNFT_TEST_USER");
-    if (!test_user || *test_user == '\0')
-        test_user = "authnft-test";
-
-    char mock_path[256];
-    snprintf(mock_path, sizeof(mock_path), "%s/%s", RULES_DIR, test_user);
-
-    (void)system("sudo mkdir -p " RULES_DIR);
-    char cmd[768];
-    snprintf(cmd, sizeof(cmd),
-             "echo 'add rule inet %s filter accept' | sudo tee %s > /dev/null",
-             TABLE_NAME, mock_path);
-    (void)system(cmd);
-    snprintf(cmd, sizeof(cmd), "sudo chown root:root %s && sudo chmod 644 %s",
-             mock_path, mock_path);
-    (void)system(cmd);
-
-    int res = nft_handler_setup(NULL, test_user, 12345, "127.0.0.1", NULL);
-
-    /* Remove the element this stage inserted so the nft table is not
-     * polluted across repeated test runs. Leaving {12345 . 127.0.0.1}
-     * behind would cause false positives in integration test 10.6,
-     * which expects the set to be empty at the start of its assertion.
-     * Best-effort; a cleanup failure does not fail the stage. */
-    (void)nft_handler_cleanup(NULL, test_user, 12345, "127.0.0.1");
-
-    snprintf(cmd, sizeof(cmd), "sudo rm -f %s", mock_path);
-    (void)system(cmd);
-
-    if (res == PAM_SUCCESS)
-        printf("[PASS]\n");
-    else
-        exit(1);
+    printf("[SKIP] Requires real authnft.slice scope (covered by integration 10.2/10.11).\n");
 }
 
 /* Stage 8: PAM_RHOST normalization — reject hostnames (UseDNS=yes), strip

@@ -96,7 +96,7 @@ int sandbox_apply(pam_handle_t *pamh) {
     /* Filesystem metadata query — libnftables or libsystemd on Fedora.
      * fstatfs is already allowlisted above; statfs is its path-based twin. */
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(statfs), 0);
-    /* Session-identity file under /run/authnft/sessions/<cg_id>.json.
+    /* Session-identity file under /run/authnft/sessions/<scope_unit>.json.
      * Empirically on Arch glibc 2.43 + Linux 6.18, rename() and unlink()
      * both go through the *legacy* single-arg syscalls (SYS_rename,
      * SYS_unlink), not their newer *at variants. On other glibc / libc

@@ -4,39 +4,70 @@
 #include "authnft.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <syslog.h>
 #include <systemd/sd-bus.h>
 #include <systemd/sd-login.h>
-#include <sys/stat.h>
 #include <errno.h>
 
-int util_get_cgroup_id(pid_t pid, uint64_t *cg_id) {
+int util_get_cgroup_path(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz) {
     char *cgroup_path = NULL;
-    char full_path[1024];
-    struct stat st;
     int result = -1;
 
     if (sd_pid_get_cgroup(pid, &cgroup_path) < 0) {
         DEBUG_PRINT("sd_pid_get_cgroup failed for pid %d", pid);
+        if (pamh)
+            pam_syslog(pamh, LOG_ERR,
+                       "authnft: sd_pid_get_cgroup failed for pid %d", (int)pid);
         return -1;
     }
 
-    snprintf(full_path, sizeof(full_path), "/sys/fs/cgroup%s", cgroup_path);
-    DEBUG_PRINT("stat: %s", full_path);
+    DEBUG_PRINT("cgroup_path: %s", cgroup_path);
 
-    if (stat(full_path, &st) == 0) {
-        *cg_id = (uint64_t)st.st_ino;
-        DEBUG_PRINT("inode: %llu", (unsigned long long)*cg_id);
+    /*
+     * Depth invariant (HANDOFF §3.1, §3.2): path MUST be exactly
+     * "/authnft.slice/<name>.scope" — two components under the root.
+     * Anything deeper, shallower, or outside authnft.slice is a
+     * misconfiguration that would silently produce packet-level match
+     * failures under `socket cgroupv2 level 2`.
+     */
+    do {
+        /* Must start with '/' */
+        if (!cgroup_path || cgroup_path[0] != '/') break;
+
+        const char *p = cgroup_path + 1; /* skip leading '/' */
+
+        /* First component: "authnft.slice/" */
+        const char *slash = strchr(p, '/');
+        if (!slash) break;
+        size_t first_len = (size_t)(slash - p);
+        if (first_len != 14 || memcmp(p, "authnft.slice", 14) != 0) break;
+
+        /* Second component: "<name>.scope" with no further slashes */
+        const char *second = slash + 1;
+        if (second[0] == '\0') break;
+        if (strchr(second, '/') != NULL) break;
+
+        /* Must end with ".scope" */
+        size_t slen = strlen(second);
+        if (slen < 7 || memcmp(second + slen - 6, ".scope", 6) != 0) break;
+
+        /* Strip leading '/' and copy */
+        size_t total = strlen(p);
+        if (total >= out_sz) break;
+        memcpy(out, p, total + 1);
         result = 0;
-    } else {
-        /* Fallback for systems that mount the unified hierarchy at a non-standard path. */
-        snprintf(full_path, sizeof(full_path), "/sys/fs/cgroup/unified%s", cgroup_path);
-        DEBUG_PRINT("fallback stat: %s", full_path);
-        if (stat(full_path, &st) == 0) {
-            *cg_id = (uint64_t)st.st_ino;
-            DEBUG_PRINT("inode (fallback): %llu", (unsigned long long)*cg_id);
-            result = 0;
-        }
+    } while (0);
+
+    if (result < 0) {
+        out[0] = '\0';
+        if (pamh)
+            pam_syslog(pamh, LOG_ERR,
+                       "authnft: cgroup path '%s' violates depth invariant "
+                       "(expected /authnft.slice/<name>.scope)",
+                       cgroup_path ? cgroup_path : "(null)");
+        DEBUG_PRINT("cgroup path validation failed: %s",
+                    cgroup_path ? cgroup_path : "(null)");
     }
 
     free(cgroup_path);

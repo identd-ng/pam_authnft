@@ -32,6 +32,7 @@
 #define CLAIMS_TAG_MAX 192 /* sanitized payload length cap */
 #define CORRELATION_ID_MAX 64 /* journal/audit correlation token */
 #define INODES_CAP 64      /* cap on /proc/<pid>/fd inode scan in peer_lookup */
+#define CGROUP_PATH_MAX 192 /* "authnft.slice/authnft-<user>-<pid>.scope" + slack */
 
 /*
  * Session data persisted via pam_set_data("authnft_cg_id", ...).
@@ -39,13 +40,25 @@
  * documented lifecycle invariant. `remote_ip[0] == '\0'` marks the cg-only
  * fallback path, where no src_ip was bound.
  *
+ * `cg_path` holds the session's cgroupv2 path (without leading slash),
+ * e.g. "authnft.slice/authnft-alice-12345.scope". This is the value the
+ * kernel resolves to a cgroupv2 inode at nft insert time via the
+ * `socket cgroupv2 level 2` expression. Depth is a project invariant
+ * (HANDOFF §3.1): path MUST have exactly two components, validated at
+ * open_session by util_get_cgroup_path.
+ *
+ * `scope_unit` is the systemd transient-scope unit name,
+ * "authnft-<user>-<pid>.scope". Used as the filename key for
+ * /run/authnft/sessions/<scope_unit>.json and as an audit field.
+ *
  * `correlation_id` is a short opaque token used to join the open and
  * close audit events for the same session across the systemd journal.
  * Captured from PAM env "AUTHNFT_CORRELATION" (sanitized) or synthesized
  * at open_session if the env var is absent.
  */
 typedef struct {
-    uint64_t cg_id;
+    char     cg_path[CGROUP_PATH_MAX];
+    char     scope_unit[UNIT_BUF_SIZE];
     char     remote_ip[IP_STR_MAX];
     char     claims_tag[CLAIMS_TAG_MAX];  /* "" if no keyring source configured */
     char     correlation_id[CORRELATION_ID_MAX];
@@ -56,19 +69,22 @@ typedef struct {
  * Checks 'authnft' group membership, validates the user's root-owned fragment,
  * and inserts the session element. If remote_ip is NULL or empty, the element
  * is inserted into session_map_cg (cgroup-only); otherwise it goes into the
- * v4/v6 map selected by the address family.
+ * v4/v6 map selected by the address family. `cg_path` is the cgroupv2 path
+ * (without leading slash) that the kernel will resolve to a u64 inode at
+ * rule-load time via `socket cgroupv2 level 2`.
  */
-int nft_handler_setup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
+int nft_handler_setup(pam_handle_t *pamh, const char *user, const char *cg_path,
                       const char *remote_ip, const char *claims_tag);
 
 /*
  * nft_handler_cleanup:
  * Atomically removes the element inserted at open_session. Set selection
  * mirrors nft_handler_setup: NULL/empty remote_ip targets session_map_cg.
- * cg_id is passed directly from PAM data to avoid re-resolution after scope
- * teardown.
+ * `cg_path` is passed directly from PAM data to avoid re-resolution after
+ * scope teardown (and because sd_pid_get_cgroup on the close_session pid
+ * would return the wrong cgroup once the scope has been reaped).
  */
-int nft_handler_cleanup(pam_handle_t *pamh, const char *user, uint64_t cg_id,
+int nft_handler_cleanup(pam_handle_t *pamh, const char *user, const char *cg_path,
                         const char *remote_ip);
 
 /*
@@ -93,11 +109,18 @@ int sandbox_apply(pam_handle_t *pamh);
 int util_is_valid_username(const char *user);
 
 /*
- * util_get_cgroup_id:
- * Resolves the 64-bit cgroupv2 inode for a given PID via sd_pid_get_cgroup(3)
- * and stat(2) on /sys/fs/cgroup/<path>.
+ * util_get_cgroup_path:
+ * Resolves the session PID's cgroupv2 path via sd_pid_get_cgroup(3), strips
+ * the leading '/', and writes it to out[out_sz]. Validates the
+ * pam_authnft depth invariant (HANDOFF §3.1, §3.2): the path MUST be
+ * "/authnft.slice/<name>.scope" exactly — anything deeper, shallower, or
+ * outside authnft.slice is a misconfiguration that would silently produce
+ * packet-level match failures under `socket cgroupv2 level 2`. Rejects
+ * with a pam_syslog line naming the offending path. Returns 0 on success,
+ * -1 on any failure. Does NOT stat(2) the cgroupfs entry; the kernel
+ * resolves path-to-inode at nft insert time.
  */
-int util_get_cgroup_id(pid_t pid, uint64_t *cg_id);
+int util_get_cgroup_path(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz);
 
 /*
  * keyring_fetch_tag:
@@ -139,9 +162,9 @@ int peer_lookup_tcp(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz);
 
 /*
  * session_file_write:
- * Writes /run/authnft/sessions/<cg_id>.json containing session metadata for
- * out-of-band observers (SIEM, schedulers, monitoring). JSON schema v=1 is
- * documented in docs/INTEGRATIONS.txt §5.6. Atomic via tempfile + rename.
+ * Writes /run/authnft/sessions/<scope_unit>.json containing session metadata
+ * for out-of-band observers (SIEM, schedulers, monitoring). JSON schema v=2
+ * is documented in docs/INTEGRATIONS.txt §5.6. Atomic via tempfile + rename.
  * Returns 0 on success, -1 on any failure. Session establishment does NOT
  * fail on a write error — the session file is best-effort observability.
  */
@@ -150,11 +173,11 @@ int session_file_write(pam_handle_t *pamh, const authnft_session_t *sd,
 
 /*
  * session_file_remove:
- * Removes /run/authnft/sessions/<cg_id>.json at close_session. Silent on
- * ENOENT (write may have failed or systemd-tmpfiles may have already reaped
- * a stale entry). Returns 0 on success or ENOENT, -1 otherwise.
+ * Removes /run/authnft/sessions/<scope_unit>.json at close_session. Silent
+ * on ENOENT (write may have failed or systemd-tmpfiles may have already
+ * reaped a stale entry). Returns 0 on success or ENOENT, -1 otherwise.
  */
-int session_file_remove(pam_handle_t *pamh, uint64_t cg_id);
+int session_file_remove(pam_handle_t *pamh, const char *scope_unit);
 
 /*
  * event_correlation_capture:
