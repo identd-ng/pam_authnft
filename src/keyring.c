@@ -66,7 +66,7 @@ ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz) {
                             (unsigned long)raw, (unsigned long)sizeof(raw),
                             0UL);
     if (n < 0) return -1;
-    if ((size_t)n > sizeof(raw)) n = sizeof(raw);  /* kernel says "needed" */
+    if ((size_t)n > sizeof(raw)) return -1;  /* payload truncated; caller logs */
 
     size_t w = 0;
     for (long i = 0; i < n && w + 1 < out_sz && w < CLAIMS_TAG_MAX; i++) {
@@ -99,7 +99,8 @@ int keyring_fetch_tag(pam_handle_t *pamh, const char *env_var,
     ssize_t got = keyring_read_serial((int32_t)parsed, out, out_sz);
     if (got < 0) {
         pam_syslog(pamh, LOG_WARNING,
-                   "authnft: keyctl_read(serial=%ld) failed: %m", parsed);
+                   "authnft: keyctl_read(serial=%ld) failed (payload may "
+                   "exceed buffer or key is inaccessible): %m", parsed);
         return 0;
     }
     if (got == 0) {

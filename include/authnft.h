@@ -153,8 +153,9 @@ ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz);
  * walked from /proc/<pid>/fd/. At most INODES_CAP inodes are scanned; if
  * more exist, a LOG_WARNING is emitted via pamh (NULL-safe for unit tests).
  * Writes a canonical IP literal (inet_ntop form) into out[out_sz].
- * Returns 1 on success, 0 on any failure (no TCP socket, netlink denied,
- * multiple ambiguous sockets, buffer too small). Uses only syscalls in
+ * Returns 1 on success (first match used when multiple sockets found),
+ * 0 on any failure (no TCP socket, netlink denied, buffer too small).
+ * Uses only syscalls in
  * the existing seccomp allowlist; safe to call post-sandbox as well but
  * currently invoked pre-sandbox in lockstep with PAM_RHOST parsing.
  */
