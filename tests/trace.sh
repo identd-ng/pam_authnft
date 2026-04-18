@@ -63,7 +63,7 @@ if ! getent passwd "$TEST_USER" > /dev/null 2>&1; then
 fi
 
 mkdir -p "$RULES_DIR"
-echo "add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 accept" \
+echo "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept" \
     > "$RULES_DIR/$TEST_USER"
 chown root:root "$RULES_DIR/$TEST_USER"
 chmod 644 "$RULES_DIR/$TEST_USER"

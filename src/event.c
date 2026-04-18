@@ -6,7 +6,7 @@
  *
  * Every open_session success emits AUTHNFT_EVENT=open and every
  * close_session that actually runs emits AUTHNFT_EVENT=close. Both carry
- * the session's cg_id, user, and a correlation token — either inherited
+ * the session's cg_path, user, and a correlation token — either inherited
  * from the PAM environment (upstream-supplied) or synthesized at open.
  *
  * Goal: make a pam_authnft session trivially correlatable to the
@@ -22,7 +22,6 @@
 
 #include "authnft.h"
 
-#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/random.h>
@@ -74,36 +73,32 @@ void event_correlation_capture(pam_handle_t *pamh, char *out, size_t out_sz) {
 void event_open_emit(pam_handle_t *pamh, const authnft_session_t *sd,
                      const char *user, int session_pid) {
     if (!sd || !user) return;
+    (void)session_pid;  /* already folded into sd->scope_unit */
 
-    char cg_id_str[32];
-    (void)snprintf(cg_id_str, sizeof(cg_id_str), "%" PRIu64, sd->cg_id);
-    char scope_unit[UNIT_BUF_SIZE];
-    (void)snprintf(scope_unit, sizeof(scope_unit), "authnft-%s-%d.scope",
-                   user, session_pid);
     char fragment[128];
     (void)snprintf(fragment, sizeof(fragment), RULES_DIR "/%s", user);
 
     int r = sd_journal_send(
-        "MESSAGE=session opened: user=%s cg_id=%" PRIu64 " remote=%s corr=%s",
-            user, sd->cg_id,
+        "MESSAGE=session opened: user=%s cg=%s remote=%s corr=%s",
+            user, sd->cg_path,
             sd->remote_ip[0] ? sd->remote_ip : "-",
             sd->correlation_id,
         "PRIORITY=%d", LOG_INFO,
         "SYSLOG_IDENTIFIER=pam_authnft",
         "AUTHNFT_EVENT=open",
         "AUTHNFT_USER=%s", user,
-        "AUTHNFT_CG_ID=%s", cg_id_str,
+        "AUTHNFT_CG_PATH=%s", sd->cg_path,
         "AUTHNFT_REMOTE_IP=%s", sd->remote_ip,
         "AUTHNFT_FRAGMENT=%s", fragment,
         "AUTHNFT_CLAIMS_TAG=%s", sd->claims_tag,
-        "AUTHNFT_SCOPE_UNIT=%s", scope_unit,
+        "AUTHNFT_SCOPE_UNIT=%s", sd->scope_unit,
         "AUTHNFT_CORRELATION=%s", sd->correlation_id,
         NULL);
     if (r < 0 && pamh) {
         pam_syslog(pamh, LOG_INFO,
-                   "authnft: EVENT=open user=%s cg_id=%" PRIu64
-                   " remote=%s correlation=%s (journal unavailable: %s)",
-                   user, sd->cg_id,
+                   "authnft: EVENT=open user=%s cg=%s remote=%s correlation=%s "
+                   "(journal unavailable: %s)",
+                   user, sd->cg_path,
                    sd->remote_ip[0] ? sd->remote_ip : "-",
                    sd->correlation_id, strerror(-r));
     }
@@ -113,23 +108,21 @@ void event_close_emit(pam_handle_t *pamh, const authnft_session_t *sd,
                       const char *user) {
     if (!sd || !user) return;
 
-    char cg_id_str[32];
-    (void)snprintf(cg_id_str, sizeof(cg_id_str), "%" PRIu64, sd->cg_id);
-
     int r = sd_journal_send(
-        "MESSAGE=session closed: user=%s cg_id=%" PRIu64 " corr=%s",
-            user, sd->cg_id, sd->correlation_id,
+        "MESSAGE=session closed: user=%s cg=%s corr=%s",
+            user, sd->cg_path, sd->correlation_id,
         "PRIORITY=%d", LOG_INFO,
         "SYSLOG_IDENTIFIER=pam_authnft",
         "AUTHNFT_EVENT=close",
         "AUTHNFT_USER=%s", user,
-        "AUTHNFT_CG_ID=%s", cg_id_str,
+        "AUTHNFT_CG_PATH=%s", sd->cg_path,
+        "AUTHNFT_SCOPE_UNIT=%s", sd->scope_unit,
         "AUTHNFT_CORRELATION=%s", sd->correlation_id,
         NULL);
     if (r < 0 && pamh) {
         pam_syslog(pamh, LOG_INFO,
-                   "authnft: EVENT=close user=%s cg_id=%" PRIu64
-                   " correlation=%s (journal unavailable: %s)",
-                   user, sd->cg_id, sd->correlation_id, strerror(-r));
+                   "authnft: EVENT=close user=%s cg=%s correlation=%s "
+                   "(journal unavailable: %s)",
+                   user, sd->cg_path, sd->correlation_id, strerror(-r));
     }
 }

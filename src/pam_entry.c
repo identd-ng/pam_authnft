@@ -84,7 +84,6 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     const char *rhost = NULL;
     char norm_ip[IP_STR_MAX] = {0};
     int session_pid = getpid();
-    uint64_t cg_id = 0;
 
     (void)flags;
 
@@ -183,25 +182,32 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     if (bus_handler_start(pamh, user, session_pid) < 0)
         return PAM_SESSION_ERR;
 
-    if (util_get_cgroup_id(session_pid, &cg_id) < 0) {
-        pam_syslog(pamh, LOG_ERR, "authnft: failed to resolve cgroup for pid %d",
-                   session_pid);
-        return PAM_SESSION_ERR;
-    }
-
     /*
-     * Persist cg_id + the normalized IP that was actually bound. The stored
-     * remote_ip (empty string for the cg-only path) tells close_session which
-     * set to delete from, removing the v4-vs-v6 strchr(':') guess and making
-     * the cg-only path's cleanup deterministic. Key name predates this struct
-     * (invariant #3); kept for compatibility.
+     * Construct cg_path deterministically from the scope we just created
+     * rather than reading /proc/<pid>/cgroup. The path is guaranteed by
+     * the Slice=authnft.slice parameter in StartTransientUnit; reading
+     * /proc would race with the cgroup migration (the kernel updates
+     * /proc/<pid>/cgroup asynchronously after the D-Bus call returns).
+     *
+     * Persist cg_path + scope_unit + the normalized IP that was actually
+     * bound. The stored remote_ip (empty string for the cg-only path)
+     * tells close_session which set to delete from. cg_path is what the
+     * kernel resolves to the u64 inode at nft insert time via
+     * `socket cgroupv2 level 2`; scope_unit is the filename key for
+     * session JSON files. Both fields are fixed-size inside the struct
+     * so free_pam_data remains a plain free(data). Key name
+     * 'authnft_cg_id' predates this struct (invariant #3); kept for
+     * lifecycle compatibility.
      */
     authnft_session_t *sd = calloc(1, sizeof(*sd));
     if (!sd) {
         pam_syslog(pamh, LOG_ERR, "authnft: out of memory storing session data");
         return PAM_SESSION_ERR;
     }
-    sd->cg_id = cg_id;
+    snprintf(sd->scope_unit, sizeof(sd->scope_unit), "authnft-%s-%d.scope",
+             user, session_pid);
+    snprintf(sd->cg_path, sizeof(sd->cg_path), "authnft.slice/%s",
+             sd->scope_unit);
     memcpy(sd->remote_ip, norm_ip, sizeof(sd->remote_ip));
     if (claims_env) {
         (void)keyring_fetch_tag(pamh, claims_env, sd->claims_tag,
@@ -215,7 +221,7 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
         return PAM_SESSION_ERR;
     }
 
-    int rc = nft_handler_setup(pamh, user, cg_id,
+    int rc = nft_handler_setup(pamh, user, sd->cg_path,
                                norm_ip[0] ? norm_ip : NULL,
                                sd->claims_tag[0] ? sd->claims_tag : NULL);
     if (rc == PAM_SUCCESS) {
@@ -244,15 +250,15 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
         return PAM_SUCCESS;
     }
 
-    DEBUG_PRINT("PAM: close_session for user=%s cg_id=%llu ip='%s'",
-                user, (unsigned long long)sd->cg_id, sd->remote_ip);
+    DEBUG_PRINT("PAM: close_session for user=%s cg_path=%s ip='%s'",
+                user, sd->cg_path, sd->remote_ip);
 
     const char *ip = sd->remote_ip[0] ? sd->remote_ip : NULL;
-    if (nft_handler_cleanup(pamh, user, sd->cg_id, ip) != PAM_SUCCESS)
+    if (nft_handler_cleanup(pamh, user, sd->cg_path, ip) != PAM_SUCCESS)
         pam_syslog(pamh, LOG_WARNING,
                    "authnft: cleanup failed for %s — element may persist", user);
 
-    (void)session_file_remove(pamh, sd->cg_id);
+    (void)session_file_remove(pamh, sd->scope_unit);
     event_close_emit(pamh, sd, user);
 
     return PAM_SUCCESS;
