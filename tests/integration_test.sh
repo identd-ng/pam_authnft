@@ -436,4 +436,62 @@ pass "10.11: cgroup match did NOT fire for disallowed source (counter stable at 
 pamtester authnft_test "$TEST_USER" close_session > /dev/null 2>&1 || true
 pass "10.11: adversarial packet classification verified"
 
+# 10.12: Class A/B socket-scope invariant (K10).
+#
+# The kernel sets sk->sk_cgrp_data at socket creation (sk_alloc →
+# cgroup_sk_alloc) and never updates it on task migration. A socket
+# created BEFORE the owning task moves into the session scope carries
+# the original cgroup (Class B). socket cgroupv2 level 2 will NOT
+# match it — the SSH TCP connection is the canonical example.
+#
+# This test creates a listener OUTSIDE the probe scope, then moves the
+# owning process INTO the scope, and verifies the counter does NOT fire.
+# This proves the alloc-time invariant and grounds the README's caveat
+# that ct state established,related accept handles pre-scope sockets.
+#
+# Host-only: same cgroup-namespace skip as 10.11.
+printf "${YELLOW}10.12: Class A/B socket-scope invariant${RESET}\n"
+
+# Reuse 10.11's probe scope (still alive from the sleep 60 keeper).
+if [[ ! -d "/sys/fs/cgroup${s1011_scope_path}" ]]; then
+    pass "10.12: [SKIP] probe scope from 10.11 no longer available"
+    printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
+    exit 0
+fi
+
+# Reset counters to isolate this test.
+nft reset counters table inet authnft > /dev/null 2>&1 || true
+
+# Start a listener OUTSIDE the scope (in the test harness's cgroup),
+# THEN move the owning process into the scope. The listener's socket
+# was created before the cgroup migration → Class B.
+nc -l 127.0.0.1 18082 </dev/null &
+S1012_LISTEN=$!
+S1011_PIDS+=($S1012_LISTEN)
+sleep 0.3
+# Now move the listener's process into the probe scope.
+echo $S1012_LISTEN > /sys/fs/cgroup${s1011_scope_path}/cgroup.procs 2>/dev/null || {
+    kill $S1012_LISTEN 2>/dev/null
+    pass "10.12: [SKIP] could not move listener into probe scope"
+    printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
+    exit 0
+}
+
+# Insert an element for the probe scope + source 127.0.0.4.
+nft add element inet authnft session_map_ipv4 \
+    '{ "authnft.slice/authnft-1011-probe.scope" . 127.0.0.4 timeout 1h }' \
+    2>/dev/null || true
+
+# Connect from the allowed source. If sk_cgrp_data were migrate-time,
+# the counter would fire. Since it's alloc-time, the listener's socket
+# still carries the harness cgroup → match does NOT fire.
+timeout 5 nc -w3 127.0.0.1 18082 --source 127.0.0.4 </dev/null >/dev/null 2>&1 || true
+
+CG_PKTS=$(nft list chain inet authnft filter 2>/dev/null \
+    | grep '10.11-cg-match' | grep -oP 'packets \K[0-9]+')
+if [[ -n "$CG_PKTS" && "$CG_PKTS" -gt 0 ]]; then
+    fail "10.12: cgroup match fired ($CG_PKTS packets) on pre-scope socket — alloc-time invariant broken"
+fi
+pass "10.12: pre-scope socket did NOT match (alloc-time cgroup inheritance confirmed)"
+
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"

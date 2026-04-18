@@ -37,6 +37,12 @@ matters most:
 - **SSH servers** — per-session firewall policy without wrapper scripts or
   ForceCommand hacks. A user's fragment can restrict outbound ports,
   pin allowed destinations, or enable masquerade only for that session.
+  Note: `socket cgroupv2` matches sockets created *inside* the session
+  scope (listeners the user opens, outbound connections from their shell),
+  not the SSH TCP connection itself — that pre-dates the scope and is
+  handled by `ct state established,related accept` in the fragment's
+  stateful chain (see [integration test 10.12](tests/integration_test.sh)
+  for the authoritative boundary description).
 - **VPN concentrators** (WireGuard, OpenConnect, strongSwan) — per-tunnel
   packet filtering tied to the VPN's PAM authentication, not a static
   ruleset that applies to all tunnels.
@@ -57,10 +63,13 @@ matters most:
 The cgroupv2 filesystem assigns each cgroup directory a unique inode, stable
 for the cgroup's lifetime. When systemd creates a transient `.scope` for
 the session via D-Bus, all session processes land under that cgroup. The
-module reads the inode via `stat(2)` and inserts `{ inode . src_ip }` into
-a named nftables set. At packet classification time, `meta cgroup` matches
-the socket's originating cgroup against the set — binding the firewall rule
-to the session without referencing PIDs, UIDs, or usernames.
+module inserts `{ cgroup_path . src_ip }` into a named nftables set; the
+kernel resolves the path to an inode at insert time via `socket cgroupv2
+level 2`. At packet classification time, nftables reads the socket's
+originating cgroup — the cgroup the socket was *created* in, not the cgroup
+its owning task is currently in — and matches it against the set, binding
+the firewall rule to the session without referencing PIDs, UIDs, or
+usernames.
 
 Session policy is inspectable with standard `nft` tooling
 (`nft list table inet authnft`); no `bpftool` or BPF program inspection
@@ -74,26 +83,27 @@ On session open:
 2. Locks the PAM process with a seccomp-BPF allowlist (`SCMP_ACT_KILL`
    default).
 3. Creates a named transient `.scope` under `authnft.slice` via D-Bus.
-4. Reads the scope's cgroupv2 inode via `stat(2)` and stores it in PAM data
-   alongside the normalised source IP and a correlation token.
+4. Constructs the scope's cgroupv2 path (`authnft.slice/<scope>.scope`) and
+   stores it in PAM data alongside the normalised source IP and a
+   correlation token.
 5. Validates and loads the user's root-owned fragment at
    `/etc/authnft/users/<username>`.
 6. Inserts a session element into one of three named sets:
-   - `session_map_ipv4` — `{ cgroup_id . src_ip }` when PAM_RHOST parses
+   - `session_map_ipv4` — `{ cgroup_path . src_ip }` when PAM_RHOST parses
      as IPv4, or as a v4-mapped v6 address extracted to plain IPv4
      (common when sshd listens on `::` with `IPV6_V6ONLY=0`)
-   - `session_map_ipv6` — `{ cgroup_id . src_ip }` when PAM_RHOST parses
+   - `session_map_ipv6` — `{ cgroup_path . src_ip }` when PAM_RHOST parses
      as pure IPv6
-   - `session_map_cg`   — `{ cgroup_id }` only, when PAM_RHOST was absent
+   - `session_map_cg`   — `{ cgroup_path }` only, when PAM_RHOST was absent
      or could not be normalised (default `rhost_policy=lax` behaviour)
-7. Writes `/run/authnft/sessions/<cg_id>.json` (0644 root:root) so
+7. Writes `/run/authnft/sessions/<scope_unit>.json` (0644 root:root) so
    unprivileged observers can correlate the cgroup back to the owning
    session — see [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §5.6.
 8. Emits a structured `AUTHNFT_EVENT=open` journal entry with the
    correlation token — see [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt)
    §6.2.
 
-On logout the stored cgroup ID is retrieved from PAM data, the element is
+On logout the stored cgroup path is retrieved from PAM data, the element is
 deleted from the exact set it was inserted into, the session-identity JSON
 is unlinked, and a matching `AUTHNFT_EVENT=close` journal entry is emitted
 with the same correlation token. The nftables table and sets persist across

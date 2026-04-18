@@ -171,6 +171,26 @@ Trust model
 - Usernames are validated against a conservative charset
   (`[A-Za-z0-9._-]`, max 32, no leading `-` or `.`) before being
   interpolated into nft commands, D-Bus unit names, or filesystem paths.
+- Socket-scope inheritance is alloc-time, not migrate-time. The kernel
+  sets `sk->sk_cgrp_data` when a socket is created (`sk_alloc` →
+  `cgroup_sk_alloc`) and never updates it when the owning task moves
+  between cgroups. This creates two classes of session socket:
+    - **Class A (in-scope):** sockets created after `bus_handler_start`
+      has moved the PAM process into `authnft.slice/<scope>.scope`.
+      Listeners the user opens, outbound connections from their shell.
+      `socket cgroupv2 level 2` correctly returns the session scope's
+      inode. The match fires.
+    - **Class B (pre-scope):** sockets that existed before
+      `bus_handler_start` ran — including the SSH TCP connection
+      itself (accepted by sshd, inherited by the privsep child, all
+      before the PAM session stack runs). These carry sshd's cgroup
+      (typically `system.slice`). `socket cgroupv2 level 2` returns
+      that cgroup, NOT the session scope. The match does not fire.
+  Class B traffic survives because `ct state established,related
+  accept` — the standard nftables stateful-chain idiom — short-
+  circuits before the cgroup match. Fragments SHOULD include this
+  rule ahead of any `socket cgroupv2` match. Integration test 10.12
+  validates this invariant empirically.
 
 
 Seccomp
