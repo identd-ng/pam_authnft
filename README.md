@@ -37,12 +37,11 @@ matters most:
 - **SSH servers** — per-session firewall policy without wrapper scripts or
   ForceCommand hacks. A user's fragment can restrict outbound ports,
   pin allowed destinations, or enable masquerade only for that session.
-  Note: `socket cgroupv2` matches sockets created *inside* the session
-  scope (listeners the user opens, outbound connections from their shell),
-  not the SSH TCP connection itself — that pre-dates the scope and is
-  handled by `ct state established,related accept` in the fragment's
-  stateful chain (see [integration test 10.12](tests/integration_test.sh)
-  for the authoritative boundary description).
+  Filtering applies to sockets the user opens inside their session
+  (listeners, outbound connections); the SSH control connection itself
+  is handled by the standard `ct state established,related accept` rule
+  that precedes the session match. See
+  [docs/ARCHITECTURE.txt](docs/ARCHITECTURE.txt) for the full trust model.
 - **VPN concentrators** (WireGuard, OpenConnect, strongSwan) — per-tunnel
   packet filtering tied to the VPN's PAM authentication, not a static
   ruleset that applies to all tunnels.
@@ -125,7 +124,7 @@ each one with MUST/SHOULD requirements and versioning guarantees.
 | **Per-user fragments** | Plain nftables syntax at `/etc/authnft/users/<user>`. May use `include` to compose shared group-level rules (§4.6). | Config management (Ansible/Salt/Puppet), identity brokers |
 | **systemd** | Transient `.scope` units under `authnft.slice`. Discoverable via `systemctl list-units 'authnft-*.scope'`. All `systemd.resource-control(5)` directives available. | Orchestrators, resource-accounting tools |
 | **claims_env** | Optional keyring-payload channel: an upstream PAM module writes a tag via `add_key(2)` + `pam_putenv(3)`; pam_authnft reads, sanitizes, and embeds it in the nftables element comment. | AAA/audit integrations, identity brokers |
-| **Session JSON + journal events** | `/run/authnft/sessions/<cg_id>.json` for observability (§5.6); `AUTHNFT_EVENT=open/close` journald records with a shared `AUTHNFT_CORRELATION` token (§6.2). | SIEM collectors, workload schedulers, operator dashboards |
+| **Session JSON + journal events** | `/run/authnft/sessions/<scope_unit>.json` for observability (§5.6); `AUTHNFT_EVENT=open/close` journald records with a shared `AUTHNFT_CORRELATION` token (§6.2). | SIEM collectors, workload schedulers, operator dashboards |
 
 The module is not a plugin host. There is no shared-library ABI, no
 callback registry. Every contract uses an existing kernel or userspace
@@ -138,7 +137,7 @@ with a narrow schema.
 
 - Linux kernel >= 5.10, cgroupv2 unified hierarchy
 - systemd with D-Bus
-- nftables >= 1.0 (`meta cgroup` match requires kernel >= 4.19)
+- nftables >= 1.0.6 (`socket cgroupv2` expression requires kernel >= 4.10)
 - Build: `gcc`, `make`, `pkg-config`
 - Libraries: `libnftables`, `libseccomp`, `libsystemd`, `libcap`, `pam`
 
@@ -167,7 +166,7 @@ sudo usermod -aG authnft alice
 
 # Create a root-owned fragment for that user
 sudo tee /etc/authnft/users/alice > /dev/null <<'EOF'
-add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 accept
+add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept
 EOF
 sudo chmod 644 /etc/authnft/users/alice
 ```
@@ -232,24 +231,24 @@ pattern, security notes, and cycle-detection guidance.
 # nft list table inet authnft
 table inet authnft {
     set session_map_ipv4 {
-        typeof meta cgroup . ip saddr
+        typeof socket cgroupv2 level 0 . ip saddr
         flags timeout
-        elements = { 27711 . 127.0.0.1 timeout 1d expires 23h55m56s comment "authnft-test (PID:1127936)" }
+        elements = { "authnft.slice/authnft-alice-1127936.scope" . 192.0.2.1 timeout 1d expires 23h55m56s comment "alice (PID:1127936)" }
     }
 
     set session_map_ipv6 {
-        typeof meta cgroup . ip6 saddr
+        typeof socket cgroupv2 level 0 . ip6 saddr
         flags timeout
     }
 
     set session_map_cg {
-        typeof meta cgroup
+        typeof socket cgroupv2 level 0
         flags timeout
     }
 
     chain filter {
         type filter hook input priority filter - 1; policy accept;
-        meta cgroup . ip saddr @session_map_ipv4 accept
+        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept
     }
 }
 ```
@@ -259,23 +258,25 @@ module in the stack, the element comment is extended with the sanitized
 payload:
 
 ```
-elements = { 27711 . 127.0.0.1 timeout 1d comment "alice (PID:1127936) [audit-session:7f3e9a]" }
+elements = { "authnft.slice/authnft-alice-1127936.scope" . 192.0.2.1 timeout 1d comment "alice (PID:1127936) [audit-session:7f3e9a]" }
 ```
 
-`27711` is the cgroupv2 inode of `authnft-authnft-test-1127936.scope`. At
-packet classification time, `meta cgroup` matches this inode against the
-socket's originating cgroup — binding the firewall rule to the session
-without referencing PIDs, UIDs, or usernames. The 24-hour timeout is a
-safety net; explicit deletion at logout is the primary cleanup mechanism.
+The quoted path is the session's cgroupv2 scope under `authnft.slice`. The
+kernel resolves it to a cgroupv2 inode at insert time. At packet
+classification time, `socket cgroupv2 level 2` reads the socket's
+originating cgroup and matches it against the set — binding the firewall
+rule to the session without referencing PIDs, UIDs, or usernames. The
+24-hour timeout is a safety net; explicit deletion at logout is the primary
+cleanup mechanism.
 
 ### Runtime observability (session JSON + audit events)
 
 pam_authnft publishes session state through two complementary out-of-band
 channels, in addition to the nftables state above:
 
-- **`/run/authnft/sessions/<cg_id>.json`** — a per-session JSON file (0644
-  root:root) written on open and removed on close, with a versioned
-  schema (`v=1`) containing user, cgroup ID, remote IP, fragment path,
+- **`/run/authnft/sessions/<scope_unit>.json`** — a per-session JSON file
+  (0644 root:root) written on open and removed on close, with a versioned
+  schema (`v=2`) containing user, cgroup path, remote IP, fragment path,
   claims tag, scope unit, correlation token, and RFC 3339 open timestamp.
   Directory is created at boot by `/usr/lib/tmpfiles.d/authnft.conf`;
   orphans from failed close paths are reaped after 7 days. Full schema in
@@ -344,9 +345,9 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 2 | A syscall outside the allowlist triggers SIGSYS |
 | 3 | An allowlisted syscall (`close`) returns normally through the sandbox |
 | 4 | libnftables dry-run API accepts well-formed syntax |
-| 5 | `util_get_cgroup_id` resolves a live PID to its cgroupv2 inode |
+| 5 | `util_get_cgroup_path` rejects a non-authnft.slice PID (depth invariant enforcement) |
 | 6 | Compiled `.so` has full RELRO, canary, PIE, CFI (via `checksec`) |
-| 7 | `nft_handler_setup` loads a root-owned fragment end-to-end |
+| 7 | Fragment load (skipped in unit tests — covered by integration 10.2/10.11) |
 | 8 | `util_normalize_ip` accepts v4/v6 literals, strips IPv6 zone suffix, rejects hostnames and junk |
 | 9 | `peer_lookup_tcp` resolves the remote address of a localhost TCP pair via `NETLINK_SOCK_DIAG` |
 | 10 | Kernel-keyring tag round-trip: `add_key` → `keyring_read_serial` with full payload sanitization |
@@ -355,11 +356,13 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 10.3 | Integration: root bypasses the module entirely |
 | 10.4 | Integration: fragment rejected when not root-owned |
 | 10.5 | Integration: fragment rejected when world-writable |
-| 10.6 | Integration: nft element cleaned up at close via persisted cg_id |
+| 10.6 | Integration: nft element cleaned up at close via persisted session data |
 | 10.7 | Integration: close_session best-effort when no prior open state |
 | 10.8 | Integration: multi-fragment composition via nftables `include` |
 | 10.9 | Integration: `/run/authnft/sessions/` JSON file lifecycle + schema + perms |
 | 10.10 | Integration: `AUTHNFT_EVENT=open/close` emitted with shared correlation token |
+| 10.11 | Integration: adversarial packet classification — cgroup match fires on allowed source, does not fire on disallowed source (host-only) |
+| 10.12 | Integration: Class A/B socket-scope invariant — pre-scope socket does not match after task migration (host-only) |
 | — | Integration: no memory errors or leaks under Valgrind memcheck |
 
 ### CI matrix
@@ -379,10 +382,12 @@ default with `PR_SET_NO_NEW_PRIVS`; see
 - If cleanup fails at logout (e.g., nftables unavailable), the set element
   expires after 24 hours via the safety-net timeout on insert. Session
   JSON orphans are reaped after 7 days by systemd-tmpfiles.
-- The cgroup ID is resolved from the PAM process at `open_session`. On PAM
-  stacks where the process invoking `open_session` is not the direct parent
-  of the user session (e.g., a forking daemon that hands off before the
-  module runs), the resolved cgroup may differ from the session cgroup.
+- The cgroup path is constructed deterministically from the scope unit name
+  at `open_session`. The `socket cgroupv2` match applies to sockets created
+  inside the session scope; sockets that existed before the scope was
+  created (e.g., the SSH control connection) carry their original cgroup
+  and are not matched. Fragments should include `ct state established,
+  related accept` ahead of the session match to handle pre-scope traffic.
 - Transitively included fragments are NOT validated by pam_authnft for
   ownership or mode. The admin must ensure every included file is
   root-owned and not world-writable.
@@ -393,7 +398,7 @@ default with `PR_SET_NO_NEW_PRIVS`; see
 nftables set types and their schemas, the fragment ownership model
 (`st_uid == 0`, no world-writable), the element comment grammar documented
 in [INTEGRATIONS.txt §6.1](docs/INTEGRATIONS.txt), the session-identity
-JSON schema (`v=1`, §5.6), and the structured audit event fields (§6.2).
+JSON schema (`v=2`, §5.6), and the structured audit event fields (§6.2).
 
 **May change before 1.0** — `claims_env` wire format details,
 `rhost_policy=kernel` NETLINK internals, `authnft.slice` shipped defaults.
