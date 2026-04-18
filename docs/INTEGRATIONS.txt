@@ -264,9 +264,9 @@ brokers, and policy engines.
 pam_authnft creates three named sets in `table inet authnft` before
 including the fragment:
 
-    session_map_ipv4   typeof meta cgroup . ip saddr;  flags timeout
-    session_map_ipv6   typeof meta cgroup . ip6 saddr; flags timeout
-    session_map_cg     typeof meta cgroup;             flags timeout
+    session_map_ipv4   typeof socket cgroupv2 level 2 . ip saddr;  flags timeout
+    session_map_ipv6   typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout
+    session_map_cg     typeof socket cgroupv2 level 2;             flags timeout
 
 A session element goes into exactly one set: IPv4 addresses (including
 v4-mapped v6 addresses extracted to plain IPv4 during normalization)
@@ -276,11 +276,11 @@ absent or unparseable PAM_RHOST values land in session_map_cg.
 Fragments MAY reference these sets in match expressions:
 
     add rule inet authnft filter \
-        meta cgroup . ip saddr @session_map_ipv4 ct state new \
+        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 ct state new \
         tcp dport { 22, 443 } accept
 
     add rule inet authnft filter \
-        meta cgroup @session_map_cg \
+        socket cgroupv2 level 2 @session_map_cg \
         ct state new tcp dport 8080 accept
 
 Fragments SHOULD NOT redeclare these sets. A redeclaration with an
@@ -333,13 +333,13 @@ absolute path from the user fragment:
 
     # /etc/authnft/groups/sre-oncall.nft
     add rule inet authnft filter \
-        meta cgroup . ip saddr @session_map_ipv4 \
+        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \
         ct state new tcp dport { 22, 443, 9090 } accept
 
     # /etc/authnft/users/alice
     include "/etc/authnft/groups/sre-oncall.nft"
     add rule inet authnft filter \
-        meta cgroup . ip saddr @session_map_ipv4 \
+        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \
         ct state new tcp dport 5432 accept
 
 Both files' rules land in `chain inet authnft filter` on open_session.
@@ -418,10 +418,10 @@ scope; the systemd documentation is authoritative.
 
 5.6 Session-identity files
 
-Status: stable (schema v=1)
+Status: stable (schema v=2)
 
 pam_authnft writes a per-session JSON file at
-/run/authnft/sessions/<cg_id>.json on open_session, and removes it on
+/run/authnft/sessions/<scope_unit>.json on open_session, and removes it on
 close_session. The file exposes the same identity data that
 pam_set_data holds internally (§1.4), without requiring a PAM handle
 or privileged access to module source. This is the read-side
@@ -431,10 +431,10 @@ container runtimes, and operator dashboards.
 5.6.1 Location and lifecycle
 
     Directory:  /run/authnft/sessions/    (0755 root:root)
-    File:       /run/authnft/sessions/<cg_id>.json
+    File:       /run/authnft/sessions/<scope_unit>.json
     Perms:      0644 root:root
     Atomicity:  tempfile + rename(2) — readers never see a partial
-                write. Intermediate name is .<cg_id>.tmp.
+                write. Intermediate name is .<scope_unit>.tmp.
     Lifecycle:  written after nft_handler_setup succeeds at open;
                 unlinked by close_session. Orphans from crashed or
                 skipped close paths are reaped by systemd-tmpfiles
@@ -443,8 +443,8 @@ container runtimes, and operator dashboards.
 5.6.2 Schema
 
     {
-      "v": 1,
-      "cg_id": 18446744073709551615,
+      "v": 2,
+      "cg_path": "authnft.slice/authnft-alice-4321.scope",
       "user": "alice",
       "remote_ip": "2001:db8::1",
       "fragment": "/etc/authnft/users/alice",
@@ -455,10 +455,13 @@ container runtimes, and operator dashboards.
 
 Field semantics:
 
-    v           integer, schema version. Currently 1. Additive
-                changes MAY add fields without bumping v; removals or
-                renames bump to v=2 under the §8 rules.
-    cg_id       uint64, cgroupv2 inode. Matches the filename.
+    v           integer, schema version. Currently 2. v=1 used a
+                numeric cg_id (cgroupv2 inode); v=2 replaced it with
+                cg_path (string). Additive changes MAY add fields
+                without bumping v; removals or renames bump under
+                the §8 rules.
+    cg_path     string, cgroupv2 scope path without leading slash
+                (e.g., "authnft.slice/authnft-alice-4321.scope").
     user        string, PAM_USER. Charset [A-Za-z0-9._-], max 32.
     remote_ip   string, normalized source IP in canonical form; v4-mapped
                 v6 addresses are extracted to plain IPv4 literals. "" on
@@ -576,7 +579,7 @@ Common to both events:
 
     AUTHNFT_EVENT         "open" | "close"
     AUTHNFT_USER          PAM_USER (charset [A-Za-z0-9._-], max 32)
-    AUTHNFT_CG_ID         cgroupv2 inode, decimal uint64
+    AUTHNFT_CG_PATH       cgroupv2 scope path string
     AUTHNFT_CORRELATION   shared token joining this event to its
                           pair. Class: [A-Za-z0-9_.:-]
 
@@ -590,8 +593,8 @@ Open-only:
 
 Human-readable MESSAGE is also set (see journalctl default output):
 
-    session opened: user=<u> cg_id=<n> remote=<ip> corr=<token>
-    session closed: user=<u> cg_id=<n> corr=<token>
+    session opened: user=<u> cg=<path> remote=<ip> corr=<token>
+    session closed: user=<u> cg=<path> corr=<token>
 
 PRIORITY is LOG_INFO (6). No event is currently emitted at a higher
 priority — operator-facing errors still land via pam_syslog(3).
@@ -663,12 +666,12 @@ lifecycle) and the "authnft:" prose (for error conditions).
 
 6.3 Cgroup correlation
 
-The cgroup inode embedded in session_map_ipv{4,6}/session_map_cg
-elements is the cgroupv2 inode of the scope in §5. Correlation:
+The cgroup path embedded in session_map_ipv{4,6}/session_map_cg
+elements is the cgroupv2 scope path from §5. The kernel resolves
+this path to an inode at rule-load time. Correlation:
 
-    cg_id from nft element
-    find /sys/fs/cgroup -xdev -inum <cg_id> 2>/dev/null
-    → returns /sys/fs/cgroup/authnft.slice/authnft-<user>-<pid>.scope
+    cg_path from nft element (e.g., "authnft.slice/authnft-alice-4321.scope")
+    → /sys/fs/cgroup/authnft.slice/authnft-alice-4321.scope
 
 This is the recommended path for observability tools that want to
 trace a packet (via `nft monitor trace`) back to a session.

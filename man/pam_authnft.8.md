@@ -14,7 +14,7 @@ pam_authnft - PAM session module that binds nftables rules to authenticated sess
 
 **pam_authnft** is a PAM session module that pins each authenticated user
 session to a systemd transient **.scope** unit and inserts a
-*{ cgroup_inode . src_ip }* element into a named nftables set. Rules
+*{ cgroup_path . src_ip }* element into a named nftables set. Rules
 authored in a per-user fragment are then evaluated against that set,
 binding packet-filter policy to the session for its entire lifetime
 without referencing PIDs, UIDs, or usernames at match time.
@@ -28,10 +28,10 @@ The module exports only **pam_sm_open_session** and
 :   If *PAM_RHOST* parses as an IPv4 or IPv6 literal, it is normalized
     to canonical form (IPv6 v4-mapped addresses are extracted to plain
     IPv4) and the session element is bound into *session_map_ipv4* or
-    *session_map_ipv6* as *{ cgroup_inode . src_ip }*. Otherwise —
+    *session_map_ipv6* as *{ cgroup_path . src_ip }*. Otherwise —
     *PAM_RHOST* missing, a hostname (*UseDNS yes* in sshd), or
     unparseable — fall back to *session_map_cg*, which is keyed on
-    *cgroup_inode* alone. Session identity is still enforced; only the
+    *cgroup_path* alone. Session identity is still enforced; only the
     src_ip leg is dropped.
 
 **rhost_policy=strict**
@@ -93,12 +93,14 @@ On session open, the module:
 5. Calls **StartTransientUnit** on
    *org.freedesktop.systemd1.Manager* to create a scope named
    *authnft-\<user\>-\<pid\>.scope* under *authnft.slice*.
-6. Resolves the scope's cgroupv2 inode via **sd_pid_get_cgroup**(3)
-   and **stat**(2) on */sys/fs/cgroup/\<path\>* (fallback
-   */sys/fs/cgroup/unified/\<path\>*).
-7. Persists session state (cgroup inode + normalized remote IP +
-   optional sanitized claims tag + correlation token) in PAM data
-   under the key *authnft_cg_id* so **pam_sm_close_session** can
+6. Constructs the cgroup path deterministically from the scope unit
+   name (e.g., *authnft.slice/authnft-alice-12345.scope*). The kernel
+   resolves this path to a cgroupv2 inode at nft insert time; no
+   **stat**(2) is performed by the module.
+7. Persists session state (cgroup path + scope unit + normalized
+   remote IP + optional sanitized claims tag + correlation token)
+   in PAM data under the key *authnft_cg_id* so
+   **pam_sm_close_session** can
    delete the exact element inserted from the correct set and reuse
    the correlation token in the close-side audit event. The key name
    is retained for compatibility; the stored value shape is an
@@ -109,12 +111,13 @@ On session open, the module:
    exist, be owned by UID 0, and not be world-writable.
 10. Issues two libnftables calls:
     - *add table inet authnft*; *add set session_map_ipv4 { typeof
-      meta cgroup . ip saddr; flags timeout; }*; the corresponding IPv6
-      set; *add set session_map_cg { typeof meta cgroup; flags timeout; }*;
-      *add chain filter { type filter hook input priority filter - 1;
-      policy accept; }*; *add element* into either
-      *session_map_ipv{4,6}* as *{ cg_id . src_ip ... }* or into
-      *session_map_cg* as *{ cg_id ... }*.
+      socket cgroupv2 level 2 . ip saddr; flags timeout; }*; the
+      corresponding IPv6 set; *add set session_map_cg { typeof socket
+      cgroupv2 level 2; flags timeout; }*; *add chain filter { type
+      filter hook input priority filter - 1; policy accept; }*; *add
+      element* into either *session_map_ipv{4,6}* as
+      *{ "cg_path" . src_ip ... }* or into *session_map_cg* as
+      *{ "cg_path" ... }*.
     - *include "/etc/authnft/users/\<user\>"* at the top level.
 
 On session close, the stored session state is retrieved from PAM data
@@ -146,7 +149,7 @@ into. Cleanup failures are logged but do not prevent session teardown.
 */usr/lib/security/pam_authnft.so*
 :   The module itself.
 
-*/run/authnft/sessions/\<cg_id\>.json*
+*/run/authnft/sessions/\<scope_unit\>.json*
 :   Per-session identity file written on open_session and removed on
     close_session. Mode 0644 root:root, JSON schema documented in
     **docs/INTEGRATIONS.txt** §5.6. Intended for unprivileged

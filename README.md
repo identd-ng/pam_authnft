@@ -231,18 +231,18 @@ pattern, security notes, and cycle-detection guidance.
 # nft list table inet authnft
 table inet authnft {
     set session_map_ipv4 {
-        typeof socket cgroupv2 level 0 . ip saddr
+        typeof socket cgroupv2 level 2 . ip saddr
         flags timeout
         elements = { "authnft.slice/authnft-alice-1127936.scope" . 192.0.2.1 timeout 1d expires 23h55m56s comment "alice (PID:1127936)" }
     }
 
     set session_map_ipv6 {
-        typeof socket cgroupv2 level 0 . ip6 saddr
+        typeof socket cgroupv2 level 2 . ip6 saddr
         flags timeout
     }
 
     set session_map_cg {
-        typeof socket cgroupv2 level 0
+        typeof socket cgroupv2 level 2
         flags timeout
     }
 

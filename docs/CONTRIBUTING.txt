@@ -2,7 +2,7 @@ Contributing to pam_authnft
 ===========================
 
 pam_authnft is a PAM session module that binds nftables rules to a user
-session via its cgroupv2 inode. It runs inside the PAM process, under a
+session via its cgroupv2 path. It runs inside the PAM process, under a
 seccomp-BPF allowlist, and talks to systemd over D-Bus and to the kernel
 via libnftables. Changes to any of those three surfaces have narrow
 tolerances — read this file before opening a pull request.
@@ -31,7 +31,7 @@ Layout
 
     src/pam_entry.c    PAM entry points; lifecycle ordering
     src/sandbox.c      seccomp-BPF allowlist
-    src/bus_handler.c  sd-bus StartTransientUnit + cgroup inode resolution
+    src/bus_handler.c  sd-bus StartTransientUnit + cgroup path validation
     src/nft_handler.c  fragment validation, nft transaction, cleanup
     include/authnft.h  public contract, constants
     tests/             unit + pamtester integration harness
@@ -48,11 +48,13 @@ Invariants to preserve
 
 2. Lifecycle order in `pam_sm_open_session` is fixed: validate user →
    root bypass → parse `PAM_RHOST` → `sandbox_apply` → `bus_handler_start`
-   → `util_get_cgroup_id` → `pam_set_data` → `nft_handler_setup`.
+   → construct `cg_path` from scope_unit → `pam_set_data` →
+   `nft_handler_setup`.
 
 3. Session state is persisted via `pam_set_data` keyed `"authnft_cg_id"`.
-   The stored value is `authnft_session_t` (cg_id + normalized remote_ip
-   + optional claims_tag + correlation_id); the key name predates the
+   The stored value is `authnft_session_t` (cg_path + scope_unit +
+   normalized remote_ip + optional claims_tag + correlation_id); the
+   key name predates the
    struct and is kept for compatibility. `close_session` reads the
    struct back to delete the exact element `open_session` inserted
    (including which set it went into) and to reuse the correlation_id
@@ -76,9 +78,9 @@ Invariants to preserve
    reference `@session_map_ipv{4,6}`.
 
 7. Three named sets live in `table inet authnft`:
-       session_map_ipv4   typeof meta cgroup . ip saddr;  flags timeout
-       session_map_ipv6   typeof meta cgroup . ip6 saddr; flags timeout
-       session_map_cg     typeof meta cgroup;             flags timeout
+       session_map_ipv4   typeof socket cgroupv2 level 2 . ip saddr;  flags timeout
+       session_map_ipv6   typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout
+       session_map_cg     typeof socket cgroupv2 level 2;             flags timeout
    A session element goes into exactly one of these, selected by
    PAM_RHOST normalization and the configured rhost_policy. The 24-hour
    element timeout is a safety net, not a primary cleanup mechanism.
@@ -94,7 +96,7 @@ Multiple pam_authnft invocations can run in parallel (e.g., simultaneous
 sshd sessions). The `add table`, `add set`, and `add chain` statements
 emitted by every invocation are byte-identical, so libnftables accepts
 them idempotently regardless of interleaving. Session elements carry
-distinct `cg_id` keys and do not collide. The `add element` path relies
+distinct `cg_path` keys and do not collide. The `add element` path relies
 on nftables' own atomicity for a single-set insert; there is no
 cross-session critical section in module code.
 
@@ -204,7 +206,7 @@ Each of the seven "do not change lightly" invariants has at least one
 automated guard. Regressions trip a known test, not a production
 incident.
 
-  #1 cg_id persistence     integration 10.6: open+close in a single
+  #1 session-data persist  integration 10.6: open+close in a single
                            PAM handle must result in an empty set
   #2 two-call nft split    enforced by the comment and code structure;
                            no automated guard (libnftables semantics

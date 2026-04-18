@@ -8,7 +8,7 @@ Bind an nftables rule to an authenticated user session for the lifetime
 of that session, without a dedicated login shell, setuid binary, or
 kernel module. OpenBSD's pf achieves this with anchors and pfctl.
 pam_authnft achieves it on Linux with a named nftables set keyed on
-`(cgroup_inode, src_ip)`, plus a systemd transient scope that pins the
+`(cgroup_path, src_ip)`, plus a systemd transient scope that pins the
 session's processes to a stable cgroup.
 
 
@@ -34,18 +34,20 @@ Moving parts
 Session identity
 ----------------
 
-Linux assigns every cgroupv2 directory a unique 64-bit inode, stable for
-the cgroup's lifetime. systemd, asked over D-Bus to start a transient
-`.scope` with `PIDs=[session_pid]`, places the session process into a
-fresh cgroup. The module resolves that cgroup's path via
-`sd_pid_get_cgroup(3)` and reads the inode from
-`/sys/fs/cgroup/<path>` (fallback: `/sys/fs/cgroup/unified<path>`).
-That inode is the session identity.
+systemd, asked over D-Bus to start a transient `.scope` with
+`PIDs=[session_pid]`, places the session process into a fresh cgroup
+under `authnft.slice`. The module constructs the cgroup path
+deterministically from the scope unit name (e.g.,
+`authnft.slice/authnft-alice-12345.scope`) and passes it as a quoted
+string to nftables. The kernel resolves the path to a cgroupv2 inode
+at rule-load time via the `socket cgroupv2 level 2` expression; no
+`stat(2)` is performed by the module.
 
-At packet classification time, `meta cgroup` in nftables reads the
-inode from the socket's originating cgroup. Rules keyed on the named
-set `session_map_ipv{4,6}` therefore match every process under the
-session scope without ever naming uids, pids, or usernames.
+At packet classification time, `socket cgroupv2 level 2` in nftables
+reads the cgroupv2 inode from the socket's originating cgroup. Rules
+keyed on the named set `session_map_ipv{4,6}` therefore match every
+process under the session scope without ever naming uids, pids, or
+usernames.
 
 A third set, `session_map_cg`, is keyed on cgroup only. It is used
 when `PAM_RHOST` is absent or not a parseable IP literal — most
@@ -88,15 +90,17 @@ Open-session sequence
          unit = "authnft-<user>-<pid>.scope"
          slice = "authnft.slice"
          job mode = "fail"
-    6. util_get_cgroup_id stats /sys/fs/cgroup<path> for st_ino
-    7. cg_id persisted via pam_set_data("authnft_cg_id", ...)
+    6. cg_path constructed deterministically from scope_unit
+       ("authnft.slice/authnft-<user>-<pid>.scope")
+    7. cg_path + scope_unit + remote_ip persisted via
+       pam_set_data("authnft_cg_id", authnft_session_t)
        (the free callback is registered so PAM reclaims it)
     8. nft_handler_setup:
          - getgrnam("authnft") + getpwnam(user); non-members pass through
          - stat(fragment): st_uid == 0 and !(mode & S_IWOTH)
          - call 1: add table/sets/chain + insert element into
-                   session_map_ipv{4,6} as { cg_id . src_ip ... } or
-                   session_map_cg as { cg_id ... } when src_ip is absent
+                   session_map_ipv{4,6} as { "cg_path" . src_ip ... } or
+                   session_map_cg as { "cg_path" ... } when src_ip is absent
          - call 2: include "<fragment>"
 
 Each call is a separate nft_run_cmd_from_buffer. libnftables does not
@@ -115,12 +119,12 @@ Close-session sequence
 ----------------------
 
     1. Root short-circuits
-    2. cg_id retrieved from PAM data (not re-resolved from the PID —
+    2. cg_path retrieved from PAM data (not re-resolved from the PID —
        the transient scope may already be gone)
     3. PAM_RHOST read
-    4. nft_handler_cleanup: delete element { cg_id . src_ip } from the
-       IPv4 or IPv6 set
-    5. /run/authnft/sessions/<cg_id>.json unlinked
+    4. nft_handler_cleanup: delete element { "cg_path" . src_ip } from
+       the IPv4 or IPv6 set
+    5. /run/authnft/sessions/<scope_unit>.json unlinked
     6. event_close_emit: AUTHNFT_EVENT=close with the open-side
        correlation token (see "Audit events" below)
 
@@ -133,11 +137,11 @@ Session-identity files
 ----------------------
 
 After open_session succeeds, pam_authnft writes
-/run/authnft/sessions/<cg_id>.json with the same identity data held
-in PAM data. The write uses a tempfile + rename(2) pattern so
+/run/authnft/sessions/<scope_unit>.json with the same identity data
+held in PAM data. The write uses a tempfile + rename(2) pattern so
 readers never see a partial file. Unprivileged observers (SIEM
 agents, workload schedulers, monitoring daemons, operator consoles)
-read these files to correlate a cgroup inode back to a pam_authnft
+read these files to correlate a session scope back to a pam_authnft
 session without needing a PAM handle or root access to module
 source. Schema and lifecycle are documented in
 docs/INTEGRATIONS.txt §5.6.

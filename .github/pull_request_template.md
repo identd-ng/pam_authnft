@@ -12,7 +12,7 @@ Otherwise, write "none".
 
 - Exported symbol set (pam_authnft.map)
 - Lifecycle ordering in pam_sm_open_session / pam_sm_close_session
-- cg_id persistence via pam_set_data
+- Session-data persistence via pam_set_data
 - Seccomp allowlist (src/sandbox.c)
 - Fragment permission check (st_uid == 0 && !world-writable)
 - Two-call nftables transaction (element insert before fragment include)
