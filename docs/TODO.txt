@@ -53,6 +53,24 @@ Medium-term
     e.g., a fragment-generator socket, /etc/authnft/users.d/ overlays,
     or policy-engine fetch with atomic rename on disk.
 
+Future kernel integration
+-------------------------
+[ ] BPF cgroup enforcement mode — attach BPF_CGROUP_INET_INGRESS /
+    BPF_CGROUP_INET_EGRESS programs directly to the session scope,
+    eliminating the Class A/B socket-scope limitation and the SYN
+    classification gap. Requires CONFIG_CGROUP_BPF (present on 6.18-lts).
+    See docs/CONTRIBUTING.txt "Future directions" section.
+[ ] Reactive scope cleanup via cgroup_lifetime_notifier — register a
+    notifier that fires when systemd destroys the scope, deleting the
+    nftables element immediately instead of relying on close_session +
+    24h timeout. Requires kernel >= ~6.15, CONFIG_CGROUP_BPF. Would
+    need a companion daemon or BPF program.
+[ ] K2 element delete hardening — nftables delete-element requires a
+    cgroup path string (no API for delete-by-inode). If the scope is
+    reaped before close_session, the path no longer exists and the
+    delete fails. Current mitigation: 24h timeout safety net. No fix
+    available without nftables API changes.
+
 Deferred (not planned unless a concrete use case surfaces)
 ----------------------------------------------------------
 [x] cgroupv2-only support documented in README and

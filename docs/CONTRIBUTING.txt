@@ -261,6 +261,17 @@ add any newly observed production syscall with a one-line
 justification comment. Do not add syscalls without strace evidence.
 
 
+Future directions
+-----------------
+
+The natural improvement path is BPF cgroup programs
+(`BPF_CGROUP_INET_INGRESS` / `BPF_CGROUP_INET_EGRESS`), which
+attach directly to a cgroup and eliminate the Class A/B socket-scope
+limitation, the SYN classification gap, and the container namespace
+mismatch that the current `socket cgroupv2` approach has. Not planned
+for the 0.x series. See docs/TODO.txt for details.
+
+
 Submitting changes
 ------------------
 
