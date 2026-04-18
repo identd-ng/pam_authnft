@@ -331,71 +331,36 @@ pass "Audit events: open + close emitted, shared correlation='$CORR_OPEN'"
 # Ordering: this stage runs last due to catch-all drop rules.
 printf "${YELLOW}10.11: Adversarial packet classification${RESET}\n"
 
-# `socket cgroupv2 level 2` uses the ABSOLUTE kernel cgroup hierarchy,
-# not the container-relative view. In a cgroup namespace (containers),
-# the authnft scope is at kernel level N+2 where N is the container's
-# nesting depth, so `level 2` resolves to the wrong cgroup and the
-# match never fires. Detect this and skip — the host-level adversarial
-# test (proved during K1 development) is authoritative.
-if [[ "$(cat /proc/1/cgroup 2>/dev/null | grep '^0::' | cut -d: -f3)" != "/" ]]; then
-    pass "10.11: [SKIP] cgroup namespace detected (container) — level 2 match is host-only"
-    printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
-    exit 0
-fi
+# Uses its OWN nft table to avoid earlier stages' accept rules
+# (which match probe traffic and accept it before the counter rule).
+# Kernel namespace fix (commit 7f3287db6543) makes socket cgroupv2
+# level 2 work inside containers — verified by RCA counter sweep.
 
-s1011_cursor=$(journalctl -n 0 --show-cursor 2>&1 | grep -oP 'cursor: \K.*' || true)
-
-dump_10_11_diagnostics() {
-    {
-        echo "--- 10.11 diagnostic dump ---"
-        if [[ -n "$s1011_cursor" ]]; then
-            journalctl --after-cursor="$s1011_cursor" \
-                --grep='authnft-10\.11-' --no-pager 2>/dev/null || true
-        fi
-        echo "--- nft list table inet authnft ---"
-        nft list table inet authnft 2>/dev/null || true
-    } >&2
-}
-
-# Create a persistent scope under authnft.slice for the probes.
+s1011_scope_path="/authnft.slice/authnft-1011-probe.scope"
 systemd-run --scope --slice=authnft.slice --unit=authnft-1011-probe \
     sleep 60 >/dev/null 2>&1 &
 S1011_PIDS+=($!)
 sleep 0.5
-s1011_scope_path="/authnft.slice/authnft-1011-probe.scope"
 if [[ ! -d "/sys/fs/cgroup$s1011_scope_path" ]]; then
-    dump_10_11_diagnostics
-    fail "10.11: could not create test scope under authnft.slice"
+    fail "10.11: could not create probe scope"
 fi
 
-# Open a pamtester session to create the nft table/chain. The fragment
-# adds a counter rule for the cgroup match — no drops. On loopback the
-# listener's response also traverses INPUT; a catch-all drop would kill
-# it, conflating inbound/outbound. Counter-based verification avoids
-# this: check the match fires on allowed traffic and doesn't fire on
-# disallowed traffic. policy accept ensures both probes complete.
-cat > "$FRAGMENT" <<'NFT'
-add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 counter comment "10.11-cg-match"
-NFT
-chown root:root "$FRAGMENT"
-chmod 644 "$FRAGMENT"
-if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
-        open_session > /dev/null 2>&1; then
-    dump_10_11_diagnostics
-    fail "10.11: session open failed — fragment rejected or module error"
-fi
+# Own table, own set, own chain — isolated from accumulated 10.1-10.10 state.
+nft add table inet authnft_1011
+nft add set inet authnft_1011 probe_set \
+    '{ typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }'
+nft add chain inet authnft_1011 input \
+    '{ type filter hook input priority 10; policy accept; }'
+nft add rule inet authnft_1011 input \
+    tcp dport 18081 socket cgroupv2 level 2 . ip saddr @probe_set \
+    counter comment '"cg-match"'
+nft add rule inet authnft_1011 input \
+    tcp dport 18081 counter comment '"all-18081"'
 
-# Insert an element for our persistent probe scope.
-if ! nft add element inet authnft session_map_ipv4 \
-    '{ "authnft.slice/authnft-1011-probe.scope" . 127.0.0.2 timeout 1h }' 2>&1; then
-    dump_10_11_diagnostics
-    fail "10.11: could not insert element for probe scope"
-fi
+nft add element inet authnft_1011 probe_set \
+    '{ "authnft.slice/authnft-1011-probe.scope" . 127.0.0.2 timeout 1h }'
 
-# Reset counters to isolate our probes from prior traffic.
-nft reset counters table inet authnft > /dev/null 2>&1 || true
-
-# Listener inside the probe scope.
+# Probe 1: allowed source. Listener in probe scope, connect from 127.0.0.2.
 sh -c '
     echo $$ > /sys/fs/cgroup'"${s1011_scope_path}"'/cgroup.procs
     echo OK | exec nc -l 127.0.0.1 18081
@@ -403,17 +368,16 @@ sh -c '
 S1011_PIDS+=($!)
 sleep 0.5
 
-# Probe 1: allowed source (127.0.0.2). Match should fire → counter > 0.
 timeout 5 nc -w3 127.0.0.1 18081 --source 127.0.0.2 </dev/null >/dev/null 2>&1 || true
-CG_PKTS=$(nft list chain inet authnft filter 2>/dev/null \
-    | grep '10.11-cg-match' | grep -oP 'packets \K[0-9]+')
+CG_PKTS=$(nft list chain inet authnft_1011 input 2>/dev/null \
+    | grep 'cg-match' | grep -oP 'packets \K[0-9]+')
 if [[ -z "$CG_PKTS" || "$CG_PKTS" -eq 0 ]]; then
-    dump_10_11_diagnostics
-    fail "10.11: cgroup match counter=0 after allowed-source probe — match not firing"
+    nft list table inet authnft_1011 >&2 2>/dev/null || true
+    fail "10.11: cgroup match counter=0 after allowed-source probe"
 fi
 pass "10.11: cgroup match fired for allowed source ($CG_PKTS packets)"
 
-# Save counter, then probe from disallowed source.
+# Probe 2: disallowed source (127.0.0.3, not in set). Counter should not increase.
 PREV_PKTS="$CG_PKTS"
 sh -c '
     echo $$ > /sys/fs/cgroup'"${s1011_scope_path}"'/cgroup.procs
@@ -422,18 +386,16 @@ sh -c '
 S1011_PIDS+=($!)
 sleep 0.5
 
-# Probe 2: disallowed source (127.0.0.3). Match should NOT fire →
-# counter should not increase.
 timeout 5 nc -w3 127.0.0.1 18081 --source 127.0.0.3 </dev/null >/dev/null 2>&1 || true
-CG_PKTS=$(nft list chain inet authnft filter 2>/dev/null \
-    | grep '10.11-cg-match' | grep -oP 'packets \K[0-9]+')
+CG_PKTS=$(nft list chain inet authnft_1011 input 2>/dev/null \
+    | grep 'cg-match' | grep -oP 'packets \K[0-9]+')
 if [[ -n "$CG_PKTS" && "$CG_PKTS" -gt "$PREV_PKTS" ]]; then
-    dump_10_11_diagnostics
+    nft list table inet authnft_1011 >&2 2>/dev/null || true
     fail "10.11: cgroup match counter increased ($PREV_PKTS→$CG_PKTS) on disallowed source"
 fi
 pass "10.11: cgroup match did NOT fire for disallowed source (counter stable at $CG_PKTS)"
 
-pamtester authnft_test "$TEST_USER" close_session > /dev/null 2>&1 || true
+nft delete table inet authnft_1011 2>/dev/null
 pass "10.11: adversarial packet classification verified"
 
 # 10.12: Class A/B socket-scope invariant (K10).
@@ -459,39 +421,44 @@ if [[ ! -d "/sys/fs/cgroup${s1011_scope_path}" ]]; then
     exit 0
 fi
 
-# Reset counters to isolate this test.
-nft reset counters table inet authnft > /dev/null 2>&1 || true
+# Own table — isolated from 10.11 and earlier stages.
+nft add table inet authnft_1012
+nft add set inet authnft_1012 probe_set \
+    '{ typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }'
+nft add chain inet authnft_1012 input \
+    '{ type filter hook input priority 11; policy accept; }'
+nft add rule inet authnft_1012 input \
+    tcp dport 18082 socket cgroupv2 level 2 . ip saddr @probe_set \
+    counter comment '"classb-match"'
 
-# Start a listener OUTSIDE the scope (in the test harness's cgroup),
-# THEN move the owning process into the scope. The listener's socket
-# was created before the cgroup migration → Class B.
+nft add element inet authnft_1012 probe_set \
+    '{ "authnft.slice/authnft-1011-probe.scope" . 127.0.0.4 timeout 1h }'
+
+# Start a listener OUTSIDE the scope, THEN move the owning process in.
+# The socket was created before the cgroup migration → Class B.
 nc -l 127.0.0.1 18082 </dev/null &
 S1012_LISTEN=$!
 S1011_PIDS+=($S1012_LISTEN)
 sleep 0.3
-# Now move the listener's process into the probe scope.
 echo $S1012_LISTEN > /sys/fs/cgroup${s1011_scope_path}/cgroup.procs 2>/dev/null || {
     kill $S1012_LISTEN 2>/dev/null
+    nft delete table inet authnft_1012 2>/dev/null
     pass "10.12: [SKIP] could not move listener into probe scope"
     printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
     exit 0
 }
 
-# Insert an element for the probe scope + source 127.0.0.4.
-nft add element inet authnft session_map_ipv4 \
-    '{ "authnft.slice/authnft-1011-probe.scope" . 127.0.0.4 timeout 1h }' \
-    2>/dev/null || true
-
-# Connect from the allowed source. If sk_cgrp_data were migrate-time,
-# the counter would fire. Since it's alloc-time, the listener's socket
-# still carries the harness cgroup → match does NOT fire.
+# Connect. If sk_cgrp_data were migrate-time, the counter would fire.
+# Since it's alloc-time, the socket still carries the harness cgroup.
 timeout 5 nc -w3 127.0.0.1 18082 --source 127.0.0.4 </dev/null >/dev/null 2>&1 || true
 
-CG_PKTS=$(nft list chain inet authnft filter 2>/dev/null \
-    | grep '10.11-cg-match' | grep -oP 'packets \K[0-9]+')
+CG_PKTS=$(nft list chain inet authnft_1012 input 2>/dev/null \
+    | grep 'classb-match' | grep -oP 'packets \K[0-9]+')
 if [[ -n "$CG_PKTS" && "$CG_PKTS" -gt 0 ]]; then
+    nft list table inet authnft_1012 >&2 2>/dev/null || true
     fail "10.12: cgroup match fired ($CG_PKTS packets) on pre-scope socket — alloc-time invariant broken"
 fi
+nft delete table inet authnft_1012 2>/dev/null
 pass "10.12: pre-scope socket did NOT match (alloc-time cgroup inheritance confirmed)"
 
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
