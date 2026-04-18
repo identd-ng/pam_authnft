@@ -164,6 +164,57 @@ trace-container:
 	@mkdir -p $(RESULT_DIR) && echo trace > $(RESULT_DIR)/workflow
 	$(RUN_CONTAINER)
 
+# ── Interop demo (prmana <-> pam_authnft bridge) ──
+#
+# Quick mode (no root, no systemd — keyring bridge demo only):
+#   make interop-container-quick
+#
+# Full mode (systemd inside container — real PAM session + nft + journal):
+#   make interop-container
+
+INTEROP_IMG = authnft-interop
+INTEROP_RESULT = /tmp/authnft-interop-result
+
+interop-container-quick:
+	@command -v podman >/dev/null || { echo "podman not installed"; exit 1; }
+	podman build -t $(INTEROP_IMG) -f tools/Containerfile.interop .
+	podman run --rm \
+	    --cap-add=SYS_ADMIN \
+	    --security-opt seccomp=unconfined \
+	    -v $(CURDIR):/src:ro,Z \
+	    $(INTEROP_IMG)
+
+interop-container: RESULT_DIR = $(INTEROP_RESULT)
+interop-container:
+	@command -v podman >/dev/null || { echo "podman not installed"; exit 1; }
+	podman build -t $(INTEROP_IMG) -f tools/Containerfile.interop .
+	@mkdir -p $(RESULT_DIR)
+	podman run --rm \
+	    --systemd=always \
+	    --privileged \
+	    --security-opt label=disable \
+	    --security-opt seccomp=unconfined \
+	    -v $(CURDIR):/src:ro,Z \
+	    -v $(RESULT_DIR):/shared:Z \
+	    -e WORKFLOW=interop \
+	    --entrypoint /sbin/init \
+	    $(INTEROP_IMG) || true
+	@EC=$$(cat $(RESULT_DIR)/exit 2>/dev/null || echo 1); \
+	 if [ "$$EC" != "0" ]; then \
+	     echo "INTEROP FAILED (exit $$EC)"; \
+	     cat $(RESULT_DIR)/log 2>/dev/null; \
+	     exit $$EC; \
+	 fi
+	@echo "=== interop results ==="
+	@grep -E 'PASS|FAIL' $(RESULT_DIR)/audit_report.txt 2>/dev/null
+	@echo ""
+	@echo "Audit report: $(RESULT_DIR)/audit_report.txt"
+	@echo "Packet capture: $(RESULT_DIR)/capture.pcap"
+
+interop-clean:
+	rm -rf $(INTEROP_RESULT)
+	@podman rmi $(INTEROP_IMG) 2>/dev/null || true
+
 install: $(TARGET) install-tmpfiles
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
@@ -194,8 +245,20 @@ install-man: man/pam_authnft.8
 	sudo install -m 644 man/pam_authnft.8 $(MAN_DIR)/pam_authnft.8
 	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
+# Keyring bridge demo — standalone tool demonstrating the prmana ↔ pam_authnft
+# kernel-keyring message bridge. No PAM dependencies; uses raw syscalls.
+# Accepts optional CLI key=value pairs as extra claims.
+BRIDGE_DEMO = tools/kring_bridge_demo
+
+kring-bridge-demo: $(BRIDGE_DEMO)
+
+$(BRIDGE_DEMO): tools/kring_bridge_demo.c
+	$(CC) -Wall -Wextra -O2 -D_GNU_SOURCE $< -o $@
+
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) $(BRIDGE_DEMO) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	@podman rmi $(INTEROP_IMG) 2>/dev/null || true
+	rm -rf $(INTEROP_RESULT)
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -205,4 +268,5 @@ distclean: clean
 
 .PHONY: all debug clean test test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
-        distclean install install-tmpfiles uninstall man install-man
+        distclean install install-tmpfiles uninstall man install-man \
+        kring-bridge-demo interop-container interop-container-quick interop-clean

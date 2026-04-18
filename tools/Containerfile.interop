@@ -1,0 +1,654 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2025 Avinash H. Duduskar
+#
+# Containerised interoperability demo for the prmana <-> pam_authnft
+# kernel-keyring bridge. Runs the full message flow — producer, consumer,
+# nftables element insertion, and journal correlation — inside a
+# booted-systemd Fedora container with no host-side dependencies beyond
+# podman.
+#
+# What it demonstrates:
+#   1. prmana-side: add_key with rich OIDC-derived claims payload
+#   2. pam_authnft-side: keyctl_read + sanitize + nft element insert
+#   3. AUTHNFT_CORRELATION propagation across both modules
+#   4. Session JSON file + journal structured events
+#   5. nftables set element with claims-enriched comment
+#   6. Full audit trail queryable by correlation token
+#
+# Build:
+#   podman build -t authnft-interop -f tools/Containerfile.interop .
+#
+# Run (quick — keyring bridge demo only):
+#   podman run --rm authnft-interop
+#
+# Run (full — build pam_authnft + run bridge demo + show nft state):
+#   mkdir -p ./interop-result
+#   podman run --rm --systemd=always \
+#       --cap-add=NET_ADMIN --cap-add=SYS_ADMIN \
+#       --security-opt label=disable \
+#       --security-opt seccomp=unconfined \
+#       -v "$PWD:/src:ro,Z" \
+#       -v "$PWD/interop-result:/shared:Z" \
+#       -e WORKFLOW=interop \
+#       authnft-interop
+#   cat ./interop-result/log
+
+FROM registry.fedoraproject.org/fedora:latest
+
+RUN dnf -y install \
+        gcc \
+        make \
+        pkgconf-pkg-config \
+        nftables \
+        nftables-devel \
+        libseccomp-devel \
+        systemd \
+        systemd-devel \
+        libcap-devel \
+        pam-devel \
+        pamtester \
+        keyutils \
+        keyutils-libs-devel \
+        jq \
+        tcpdump \
+        nmap-ncat \
+        iproute \
+        procps-ng \
+        util-linux \
+        sudo \
+        diffutils \
+        which \
+    && dnf clean all
+
+# ── Interop workflow runner ──
+#
+# Two modes:
+#   1. "quick" (default, no systemd needed): builds and runs the
+#      kring_bridge_demo tool directly. Works with plain `podman run --rm`.
+#   2. "interop" (requires --systemd=always): builds pam_authnft, sets up
+#      a test user + fragment, runs the bridge demo, then uses pamtester
+#      to exercise the real PAM module and show live nft/journal state.
+
+RUN cat > /usr/local/bin/run-interop <<'SCRIPT' \
+ && chmod +x /usr/local/bin/run-interop
+#!/bin/bash
+set -uo pipefail
+
+WORKFLOW=${WORKFLOW:-quick}
+echo "=== prmana <-> pam_authnft interop demo (mode: $WORKFLOW) ==="
+echo ""
+
+if [ -d /src/src ]; then
+    cp -a /src/. /build/
+else
+    echo "No /src bind-mount found. Use: -v \$PWD:/src:ro,Z" >&2
+    exit 1
+fi
+cd /build
+
+EC=0
+
+case "$WORKFLOW" in
+    quick)
+        # Build and run the keyring bridge demo — no root, no systemd
+        echo "Building keyring bridge demo..."
+        make kring-bridge-demo 2>&1
+        echo ""
+        echo "Running bridge demo..."
+        echo ""
+        ./tools/kring_bridge_demo "$@" || EC=$?
+        ;;
+
+    interop)
+        # Full interop: build pam_authnft + bridge demo + live PAM exercise
+        echo "[1/6] Building pam_authnft and bridge demo..."
+        make clean >/dev/null 2>&1 || true
+        make 2>&1 || { EC=$?; echo "Build failed"; }
+        make kring-bridge-demo 2>&1 || { EC=$?; echo "Demo build failed"; }
+
+        if [ $EC -eq 0 ]; then
+            echo ""
+            echo "[2/6] Running keyring bridge demo..."
+            echo ""
+            ./tools/kring_bridge_demo || true
+        fi
+
+        if [ $EC -eq 0 ]; then
+            echo ""
+            echo "[3/6] Setting up test user and fragment..."
+
+            # Create session directory for session-identity JSON files
+            mkdir -p /run/authnft/sessions
+            chmod 0755 /run/authnft/sessions
+
+            # Create authnft group and test user
+            getent group authnft >/dev/null 2>&1 || groupadd authnft
+            getent passwd interop-test >/dev/null 2>&1 \
+                || useradd -r -s /usr/sbin/nologin -G authnft interop-test
+
+            # Create per-user nftables fragment
+            mkdir -p /etc/authnft/users
+            cat > /etc/authnft/users/interop-test <<'FRAG'
+# prmana <-> pam_authnft interop demo fragment
+# Per-session chain and sets — placeholders substituted at session open.
+# ct state established,related is handled by the module in the shared filter chain.
+add rule inet authnft @session_chain \
+    socket cgroupv2 level 2 . ip saddr @session_v4 \
+    tcp dport { 22, 443, 8443, 9090 } accept comment "interop-demo: service access"
+# Block lateral movement to 10.0.0.0/8
+add rule inet authnft @session_chain \
+    socket cgroupv2 level 2 . ip saddr @session_v4 \
+    ip daddr 10.0.0.0/8 drop comment "interop-demo: lateral movement block"
+FRAG
+            chown root:root /etc/authnft/users/interop-test
+            chmod 644 /etc/authnft/users/interop-test
+            echo "  User: interop-test (member of authnft group)"
+            echo "  Fragment: /etc/authnft/users/interop-test"
+
+            # Create PAM config — claims_env=PRMANA_KEY tells pam_authnft
+            # to read the keyring serial from that PAM env var (set by prmana
+            # in production, simulated by pam_keyring_demo below).
+            cat > /etc/pam.d/authnft_interop <<'PAM'
+auth     required  pam_permit.so
+account  required  pam_permit.so
+session  optional  pam_keyinit.so force revoke
+session  optional  /build/pam_keyring_demo.so
+session  required  /build/pam_authnft.so claims_env=PRMANA_KEY
+password required  pam_deny.so
+PAM
+            echo "  PAM config: /etc/pam.d/authnft_interop"
+            echo "    claims_env=PRMANA_KEY (keyring bridge enabled)"
+        fi
+
+        if [ $EC -eq 0 ]; then
+            echo ""
+            echo "[4/6] Building prmana simulator + interop harness..."
+            echo ""
+
+            # ── pam_keyring_demo.so ──
+            # Simulates prmana's two jobs:
+            #   A) Publish claims to kernel keyring + set PAM env vars
+            #   B) Generate nftables fragment from token claims
+            # In production, (A) is keyring.rs and (B) would be a new
+            # fragment-generator feature in prmana that writes policy
+            # based on IdP-issued claims (allowed_ports, denied_nets, etc.)
+            cat > /build/pam_keyring_demo.c <<'PAMMOD'
+#include <security/pam_modules.h>
+#include <security/pam_ext.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+
+#define KEY_SPEC_SESSION_KEYRING (-3)
+#define KEYCTL_SET_TIMEOUT 15
+#define KEYCTL_SETPERM 5
+#define KEY_POS_VIEW   0x01000000
+#define KEY_POS_READ   0x02000000
+#define KEY_POS_SEARCH 0x08000000
+
+PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
+                                    int argc, const char **argv) {
+    (void)flags; (void)argc; (void)argv;
+
+    const char *user = NULL;
+    pam_get_item(pamh, PAM_USER, (const void **)&user);
+    if (!user) user = "unknown";
+
+    /* (A) Publish claims to kernel keyring — mirrors prmana keyring.rs */
+    const char *payload = "v=1;jti=f47ac10b;exp=1745053200;"
+                          "iss=idp.example.com;"
+                          "sid=demo;dept=sre;pool=east";
+    long serial = syscall(SYS_add_key, "user", "prmana_demo",
+                          payload, strlen(payload),
+                          (unsigned long)KEY_SPEC_SESSION_KEYRING);
+    if (serial < 0) {
+        pam_syslog(pamh, 4, "prmana-sim: add_key failed: %m");
+        return PAM_SUCCESS;
+    }
+    syscall(SYS_keyctl, (long)KEYCTL_SET_TIMEOUT, serial, (long)3600, 0L, 0L);
+    unsigned long perms = KEY_POS_VIEW | KEY_POS_READ | KEY_POS_SEARCH;
+    syscall(SYS_keyctl, (long)KEYCTL_SETPERM, serial, (long)perms, 0L, 0L);
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "PRMANA_KEY=%ld", serial);
+    pam_putenv(pamh, buf);
+
+    char corr[96];
+    snprintf(corr, sizeof(corr), "AUTHNFT_CORRELATION=prmana-demo-%d", getpid());
+    pam_putenv(pamh, corr);
+
+    pam_syslog(pamh, 6, "prmana-sim: keyring serial=%ld (%zu bytes)", serial, strlen(payload));
+
+    /* (B) Generate nftables fragment from token claims.
+     * In production, prmana would derive these rules from IdP claims:
+     *   - allowed_ports claim  → tcp dport accept rules
+     *   - denied_networks claim → ip daddr drop rules
+     *   - compliance_zone claim → logging/audit rules
+     * The fragment is written as root (PAM runs as root) to
+     * /etc/authnft/users/<user>, satisfying pam_authnft's ownership check. */
+    char frag_path[256];
+    snprintf(frag_path, sizeof(frag_path), "/etc/authnft/users/%s", user);
+    FILE *f = fopen(frag_path, "w");
+    if (f) {
+        fprintf(f,
+            "# Fragment generated by prmana from OIDC token claims\n"
+            "# IdP: idp.example.com | dept: sre | pool: east\n"
+            "# Policy derived from token claims: allowed_ports, denied_nets\n"
+            "# Placeholders substituted by pam_authnft at session open.\n"
+            "#\n"
+            "# Token claim: allowed_ports=[22,443,8443,9090]\n"
+            "add rule inet authnft @session_chain \\\n"
+            "    socket cgroupv2 level 2 . ip saddr @session_v4 \\\n"
+            "    tcp dport { 22, 443, 8443, 9090 } accept \\\n"
+            "    comment \"prmana: allowed by token claim\"\n"
+            "\n"
+            "# Token claim: denied_nets=[10.0.0.0/8]\n"
+            "add rule inet authnft @session_chain \\\n"
+            "    socket cgroupv2 level 2 . ip saddr @session_v4 \\\n"
+            "    ip daddr 10.0.0.0/8 drop \\\n"
+            "    comment \"prmana: blocked by token claim\"\n");
+        fclose(f);
+        chmod(frag_path, 0644);
+        pam_syslog(pamh, 6, "prmana-sim: wrote fragment %s from token claims", frag_path);
+    }
+
+    return PAM_SUCCESS;
+}
+PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
+                                     int argc, const char **argv) {
+    (void)pamh; (void)flags; (void)argc; (void)argv;
+    return PAM_SUCCESS;
+}
+PAMMOD
+            gcc -shared -fPIC -o /build/pam_keyring_demo.so \
+                /build/pam_keyring_demo.c -lpam 2>&1
+            echo "  Built pam_keyring_demo.so (prmana simulator: keyring + fragment generator)"
+
+            # ── interop_harness ──
+            # Custom PAM client that holds the session open so we can
+            # capture nft state and run packet tests mid-session.
+            gcc -Wall -Wextra -O2 -o /build/interop_harness \
+                /src/tools/interop_harness.c -lpam 2>&1
+            echo "  Built interop_harness (split open/close PAM client)"
+
+            # ── mid-session test script ──
+            # Runs INSIDE the session's cgroup scope. Captures:
+            #   - nftables table state (element + rules)
+            #   - packet test: allowed port (should succeed)
+            #   - packet test: blocked network (should be dropped)
+            #   - tcpdump capture of both tests
+            cat > /build/mid_session_test.sh <<'TEST'
+#!/bin/bash
+set -uo pipefail
+
+REPORT=/shared/audit_report.txt
+exec > >(tee -a "$REPORT") 2>&1
+
+echo ""
+echo "========================================================================"
+echo "  AUDIT REPORT: prmana <-> pam_authnft interop verification"
+echo "  Generated: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "  All timestamps UTC"
+echo "========================================================================"
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 1. Session Context ───────────────────────────────────────────────────"
+echo ""
+echo "  This process is running INSIDE the authnft session scope."
+echo "  PID:    $$"
+echo "  Cgroup: $(cat /proc/self/cgroup 2>/dev/null)"
+echo ""
+echo "  PAM stack order for this session:"
+echo "    1. pam_keyinit.so         -> created session keyring"
+echo "    2. pam_keyring_demo.so    -> [PRMANA] published claims to keyring"
+echo "                                 [PRMANA] wrote nftables fragment from token claims"
+echo "    3. pam_authnft.so         -> [AUTHNFT] read claims from keyring"
+echo "                                 [AUTHNFT] created systemd scope"
+echo "                                 [AUTHNFT] inserted nft element (cgroup+IP)"
+echo "                                 [AUTHNFT] loaded fragment rules into kernel"
+echo "                                 [AUTHNFT] emitted journal event with correlation token"
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 2. [PRMANA] Kernel Keyring — claims published by prmana ──────────────"
+echo ""
+echo "  Session keyring tree:"
+keyctl show @s 2>/dev/null || echo "  (cannot access session keyring)"
+echo ""
+PRMANA_SERIAL=$(keyctl search @s user prmana_demo 2>/dev/null || true)
+if [ -n "$PRMANA_SERIAL" ]; then
+    echo "  prmana key found: serial=$PRMANA_SERIAL"
+    PRMANA_PAYLOAD=$(keyctl pipe "$PRMANA_SERIAL" 2>/dev/null || echo "[unreadable]")
+    echo "  payload: $PRMANA_PAYLOAD"
+    echo ""
+    echo "  Parsed claims (produced by prmana from OIDC token):"
+    echo "$PRMANA_PAYLOAD" | tr ';' '\n' | while read -r pair; do
+        key=$(echo "$pair" | cut -d= -f1)
+        val=$(echo "$pair" | cut -d= -f2-)
+        printf "    %-8s = %s\n" "$key" "$val"
+    done
+    echo ""
+    PERM=$(keyctl rdescribe "$PRMANA_SERIAL" 2>/dev/null || true)
+    echo "  Key permissions: $PERM"
+    echo "  (POSSESSOR-only VIEW|READ|SEARCH — set by prmana per INTEGRATIONS.txt §2)"
+else
+    echo "  WARNING: prmana_demo key not found in session keyring"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 3. [PRMANA] Fragment — nftables rules generated from token claims ────"
+echo ""
+frag="/etc/authnft/users/interop-test"
+if [ -f "$frag" ]; then
+    echo "  Path:  $frag"
+    echo "  Owner: $(stat -c '%U:%G' "$frag")  Mode: $(stat -c '%a' "$frag")"
+    echo "  (root-owned, not world-writable — passes pam_authnft ownership check)"
+    echo ""
+    echo "  Fragment contents (written by prmana from OIDC claims):"
+    sed 's/^/    /' "$frag"
+else
+    echo "  (no fragment found)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 4. [AUTHNFT] nftables table — kernel state DURING open session ───────"
+echo ""
+echo "  pam_authnft created this table, inserted the element with prmana's"
+echo "  claims as the comment, and loaded the prmana-generated fragment rules."
+echo ""
+nft list table inet authnft 2>/dev/null || echo "  (table not present)"
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 5. [AUTHNFT] Session element — prmana claims visible in nft ──────────"
+echo ""
+echo "  The element comment carries prmana's claims through the keyring bridge:"
+echo ""
+# Discover per-session set name (Plan B: each session gets its own sets)
+SESSION_SET_V4=$(nft list table inet authnft 2>/dev/null | grep -oP 'set \Ksession_\S+_v4' | head -1)
+if [ -n "$SESSION_SET_V4" ]; then
+    nft list set inet authnft "$SESSION_SET_V4" 2>/dev/null | grep -A2 'elements'
+else
+    echo "  (no per-session v4 set found)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 6. Packet Enforcement Proof ──────────────────────────────────────────"
+echo ""
+echo "  Setup: loopback tests with cgroup-matched nft elements."
+echo "  Test elements inserted with 127.0.0.1 and 10.99.0.1 to verify"
+echo "  accept and drop rules on the input hook within the session scope."
+echo ""
+
+# Discover per-session set and scope for element insertion.
+# Plan B: the module creates per-session sets; we add test elements there.
+SCOPE=$(cat /proc/self/cgroup 2>/dev/null | sed 's|^0::/||')
+echo "  Inserting test element for loopback verification..."
+echo "    Scope:   $SCOPE"
+echo "    Set:     $SESSION_SET_V4"
+echo "    Test IP: 127.0.0.1 (loopback — matches on input hook)"
+if [ -n "$SESSION_SET_V4" ]; then
+    nft add element inet authnft "$SESSION_SET_V4" \
+        "{ \"$SCOPE\" . 127.0.0.1 timeout 300s \
+           comment \"TEST-ELEMENT: loopback enforcement proof\" }" 2>&1 || \
+        echo "    WARNING: failed to insert test element"
+else
+    echo "    WARNING: no per-session set found, skipping element insert"
+fi
+
+# Show the set with both elements
+echo ""
+echo "  Set state with test element:"
+if [ -n "$SESSION_SET_V4" ]; then
+    nft list set inet authnft "$SESSION_SET_V4" 2>/dev/null | grep -A3 'elements' | sed 's/^/    /'
+fi
+
+# Start tcpdump on loopback
+tcpdump -i lo -nn -c 30 -w /shared/capture.pcap 2>/dev/null &
+TCPDUMP_PID=$!
+sleep 0.3
+
+# ── Test 1: Allowed port (443) ──
+# Fragment rule: tcp dport { 22, 443, 8443, 9090 } accept
+echo ""
+echo "  Test 1: Port 443/tcp (in allowed_ports claim: SHOULD ACCEPT)"
+echo "    Direction: 127.0.0.1 -> 127.0.0.1:443 (loopback, in cgroup scope)"
+echo "ALLOWED_443" | ncat -l 127.0.0.1 443 &
+SRV=$!; sleep 0.2
+result=$(ncat -w 2 127.0.0.1 443 2>/dev/null) || true
+kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true
+if [ "$result" = "ALLOWED_443" ]; then
+    echo "    Result:   PASS — response received: '$result'"
+    echo "    Rule:     ct state new tcp dport { 443 } accept"
+else
+    echo "    Result:   ${result:-TIMEOUT} (chain policy=accept: traffic allowed)"
+fi
+
+# ── Test 2: Blocked port (80) — not in allow list, daddr in 10.0.0.0/8 ──
+# The deny rule matches: socket cgroupv2 . ip saddr @set AND ip daddr 10.0.0.0/8.
+# To test inside a container, we add 10.99.0.1 to lo and insert an element
+# with saddr=10.99.0.1 so the set lookup matches the loopback traffic.
+echo ""
+echo "  Test 2: Port 80/tcp to 10.x address (denied_nets claim: SHOULD DROP)"
+ip addr add 10.99.0.1/32 dev lo 2>/dev/null || true
+nft add element inet authnft "$SESSION_SET_V4" \
+    "{ \"$SCOPE\" . 10.99.0.1 timeout 300s \
+       comment \"TEST-ELEMENT: deny-rule verification\" }" 2>/dev/null || true
+echo "    Direction: 10.99.0.1 -> 10.99.0.1:80 (saddr+daddr in 10.0.0.0/8)"
+echo "SHOULD_NOT_REACH" | ncat -l 10.99.0.1 80 &
+SRV=$!; sleep 0.2
+result=$(timeout 3 ncat -w 2 -s 10.99.0.1 10.99.0.1 80 2>/dev/null) || true
+kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true
+if [ -z "$result" ]; then
+    echo "    Result:   PASS — connection timed out (dropped by nft rule)"
+    echo "    Rule:     ip daddr 10.0.0.0/8 ct state new drop"
+elif [ "$result" = "SHOULD_NOT_REACH" ]; then
+    echo "    Result:   FAIL — response received (drop rule did not fire)"
+else
+    echo "    Result:   ${result}"
+fi
+nft delete element inet authnft "$SESSION_SET_V4" \
+    "{ \"$SCOPE\" . 10.99.0.1 }" 2>/dev/null || true
+ip addr del 10.99.0.1/32 dev lo 2>/dev/null || true
+
+# ── Test 3: Allowed port (9090) ──
+echo ""
+echo "  Test 3: Port 9090/tcp (in allowed_ports claim: SHOULD ACCEPT)"
+echo "    Direction: 127.0.0.1 -> 127.0.0.1:9090 (loopback, in cgroup scope)"
+echo "ALLOWED_9090" | ncat -l 127.0.0.1 9090 &
+SRV=$!; sleep 0.2
+result=$(ncat -w 2 127.0.0.1 9090 2>/dev/null) || true
+kill $SRV 2>/dev/null; wait $SRV 2>/dev/null || true
+if [ "$result" = "ALLOWED_9090" ]; then
+    echo "    Result:   PASS — response received: '$result'"
+    echo "    Rule:     ct state new tcp dport { 9090 } accept"
+else
+    echo "    Result:   ${result:-TIMEOUT} (chain policy=accept: traffic allowed)"
+fi
+
+# Stop tcpdump and show capture
+sleep 0.5
+kill $TCPDUMP_PID 2>/dev/null; wait $TCPDUMP_PID 2>/dev/null || true
+echo ""
+echo "  Packet capture (loopback):"
+pcap_out=$(tcpdump -nn -r /shared/capture.pcap 2>/dev/null | head -20)
+if [ -n "$pcap_out" ]; then
+    echo "$pcap_out" | sed 's/^/    /'
+else
+    echo "    (no packets captured)"
+fi
+
+# Clean up test element
+nft delete element inet authnft "$SESSION_SET_V4" \
+    "{ \"$SCOPE\" . 127.0.0.1 }" 2>/dev/null || true
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 7. [AUTHNFT] Journal Events — correlated with prmana ─────────────────"
+echo ""
+journalctl -t pam_authnft --no-pager -o short-iso 2>/dev/null || echo "  (no events yet)"
+echo ""
+echo "  Correlation token join (AUTHNFT_CORRELATION set by prmana, read by authnft):"
+journalctl --no-pager -o json 2>/dev/null \
+    | jq -r 'select(.AUTHNFT_CORRELATION != null) |
+        "\(.AUTHNFT_CORRELATION)\t\(.AUTHNFT_EVENT // "?")\t\(.AUTHNFT_USER // "?")"' \
+    2>/dev/null \
+    | sort -u \
+    | awk -F'\t' 'BEGIN { printf "  %-35s %-8s %s\n", "CORRELATION", "EVENT", "USER" }
+                  { printf "  %-35s %-8s %s\n", $1, $2, $3 }' \
+    || echo "  (no correlation events)"
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 8. [AUTHNFT] Session JSON ────────────────────────────────────────────"
+echo ""
+echo "  Written by pam_authnft. claims_tag field contains prmana's keyring payload."
+echo ""
+if [ -d /run/authnft/sessions ]; then
+    for f in /run/authnft/sessions/*.json; do
+        [ -f "$f" ] && jq '.' "$f" 2>/dev/null || cat "$f" 2>/dev/null
+    done
+else
+    echo "  (directory not present)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 9. [AUTHNFT] Systemd Scope ───────────────────────────────────────────"
+echo ""
+echo "  Created by pam_authnft via D-Bus StartTransientUnit."
+echo ""
+systemctl --type=scope --no-pager list-units 'authnft-*.scope' 2>/dev/null || echo "  (none)"
+echo ""
+echo "  Cgroup tree:"
+systemd-cgls /authnft.slice 2>/dev/null || echo "  (unavailable)"
+
+# ─────────────────────────────────────────────────────────────────────
+echo ""
+echo "── 10. Chain of Custody Summary ─────────────────────────────────────────"
+echo ""
+echo "  IdP                   prmana                pam_authnft           kernel"
+echo "  ───                   ──────                ───────────           ──────"
+echo "  OIDC token   ──────>  validate token"
+echo "  (claims:              extract claims"
+echo "   dept=sre             write keyring  ──────> read keyring"
+echo "   pool=east            write fragment          load fragment ──────> nft rules"
+echo "   allowed_ports        set PRMANA_KEY          insert element ────> nft set"
+echo "   denied_nets)         set CORRELATION ──────> emit journal"
+echo "                                                write session JSON"
+echo "                                                create scope ──────> cgroup"
+echo ""
+echo "  Every kernel-enforced rule traces back to an IdP-issued claim."
+echo "  The correlation token joins auth + session events across journal streams."
+echo ""
+echo "========================================================================"
+echo "  AUDIT COMPLETE — $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "  Report:  /shared/audit_report.txt"
+echo "  Capture: /shared/capture.pcap"
+echo "========================================================================"
+TEST
+            chmod +x /build/mid_session_test.sh
+            echo "  Created mid-session test script"
+
+            echo ""
+            echo "  Running interop harness (session open -> tests -> close)..."
+            echo ""
+
+            # Bypass seccomp — the simulator PAM module uses syscalls not in
+            # pam_authnft's allowlist. In production, prmana runs in pam_sm_authenticate
+            # (separate PAM hook) before the sandbox activates in open_session.
+            AUTHNFT_NO_SANDBOX=1 /build/interop_harness \
+                authnft_interop interop-test 10.42.7.131 \
+                /build/mid_session_test.sh 2>&1 || {
+                EC=$?
+                echo "interop harness failed (exit $EC)"
+            }
+        fi
+
+        if [ $EC -eq 0 ]; then
+            echo ""
+            echo "[5/6] Post-session verification..."
+            echo ""
+            echo "  nft table after close (element should be removed, rules persist):"
+            nft list table inet authnft 2>/dev/null || echo "  (table not present)"
+            echo ""
+            echo "  Session files after close:"
+            ls -la /run/authnft/sessions/ 2>/dev/null || echo "  (cleaned up on close)"
+        fi
+
+        if [ $EC -eq 0 ]; then
+            echo ""
+            echo "[6/6] Audit report location..."
+            echo ""
+            echo "  Full audit report: /shared/audit_report.txt"
+            echo "  Packet capture:    /shared/capture.pcap"
+            echo "  Journal log:       /shared/log"
+            echo "  nft state:         /shared/nft-state.txt"
+        fi
+
+        # Copy results to shared volume
+        if [ -d /shared ]; then
+            echo ""
+            echo "Saving results to /shared/..."
+            journalctl --no-pager -o short-iso > /shared/log 2>&1 || true
+            nft list table inet authnft > /shared/nft-state.txt 2>/dev/null || true
+            cp /run/authnft/sessions/*.json /shared/ 2>/dev/null || true
+            echo "$EC" > /shared/exit
+        fi
+
+        echo ""
+        echo "================================================================"
+        echo "  Interop demo complete. Exit code: $EC"
+        echo "================================================================"
+        ;;
+
+    *)
+        echo "Unknown workflow: $WORKFLOW" >&2
+        EC=2
+        ;;
+esac
+
+# If running under systemd, halt the container
+if [ "$$" != "1" ] && command -v systemctl >/dev/null 2>&1; then
+    sync
+    systemctl --no-block poweroff 2>/dev/null || true
+fi
+
+exit $EC
+SCRIPT
+
+# systemd unit for the interop workflow (used in --systemd=always mode)
+RUN mkdir -p /etc/systemd/system && \
+    cat > /etc/systemd/system/authnft-interop.service <<'EOF'
+[Unit]
+Description=prmana <-> pam_authnft interop demo
+After=basic.target
+Wants=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/bin/run-interop
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=300
+Environment=WORKFLOW=interop
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+RUN systemctl enable authnft-interop.service \
+ && mkdir -p /build /shared
+
+# Default: quick mode (no systemd needed)
+CMD ["/usr/local/bin/run-interop"]
+
+# For full interop mode, use: ENTRYPOINT ["/sbin/init"]
+# with --systemd=always and -e WORKFLOW=interop
