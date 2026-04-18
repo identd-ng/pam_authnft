@@ -53,9 +53,12 @@ matters most:
   can carry AAA attributes or token-derived claims from an upstream PAM
   module into the nftables element comment, creating a traceable link
   between the authentication decision and the firewall rule.
-- **Container and VM orchestrators** — session-scoped network policy at
-  the PAM layer, using the same cgroupv2 identity that systemd resource
-  controls already understand.
+- **Bastion hosts fronting containers** — users authenticate via PAM (SSH,
+  OIDC), pam_authnft restricts which container IPs and ports that session
+  can reach. The match works inside containers on kernels >= 6.12 (namespace-
+  aware cgroupv2 offset). For policy enforcement *inside* Kubernetes pods
+  (no PAM session), BPF cgroup programs are the natural path — see
+  [docs/TODO.txt](docs/TODO.txt).
 
 ## How it works
 
@@ -166,6 +169,7 @@ sudo usermod -aG authnft alice
 
 # Create a root-owned fragment for that user
 sudo tee /etc/authnft/users/alice > /dev/null <<'EOF'
+add rule inet authnft filter ct state established,related accept
 add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept
 EOF
 sudo chmod 644 /etc/authnft/users/alice
@@ -231,18 +235,18 @@ pattern, security notes, and cycle-detection guidance.
 # nft list table inet authnft
 table inet authnft {
     set session_map_ipv4 {
-        typeof socket cgroupv2 level 2 . ip saddr
+        typeof socket cgroupv2 level 0 . ip saddr
         flags timeout
         elements = { "authnft.slice/authnft-alice-1127936.scope" . 192.0.2.1 timeout 1d expires 23h55m56s comment "alice (PID:1127936)" }
     }
 
     set session_map_ipv6 {
-        typeof socket cgroupv2 level 2 . ip6 saddr
+        typeof socket cgroupv2 level 0 . ip6 saddr
         flags timeout
     }
 
     set session_map_cg {
-        typeof socket cgroupv2 level 2
+        typeof socket cgroupv2 level 0
         flags timeout
     }
 
@@ -252,6 +256,10 @@ table inet authnft {
     }
 }
 ```
+
+Note: `nft list` canonicalises the set type to `level 0`; the rule
+retains the configured `level 2`. This is expected nftables behaviour
+— the level is a property of the rule expression, not the set type.
 
 With `claims_env=NAME` set and a valid keyring entry produced by an earlier
 module in the stack, the element comment is extended with the sanitized
@@ -361,8 +369,8 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 10.8 | Integration: multi-fragment composition via nftables `include` |
 | 10.9 | Integration: `/run/authnft/sessions/` JSON file lifecycle + schema + perms |
 | 10.10 | Integration: `AUTHNFT_EVENT=open/close` emitted with shared correlation token |
-| 10.11 | Integration: adversarial packet classification — cgroup match fires on allowed source, does not fire on disallowed source (host-only) |
-| 10.12 | Integration: Class A/B socket-scope invariant — pre-scope socket does not match after task migration (host-only) |
+| 10.11 | Integration: adversarial packet classification — cgroup match fires on allowed source, does not fire on disallowed source |
+| 10.12 | Integration: Class A/B socket-scope invariant — pre-scope socket does not match after task migration |
 | — | Integration: no memory errors or leaks under Valgrind memcheck |
 
 ### CI matrix
