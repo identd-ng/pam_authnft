@@ -5,7 +5,7 @@
 # Generates example nftables fragments and setup commands for pam_authnft.
 # Usage: examples_generator.sh [-s|-f|-m|-h]
 
-USER_NAME="$(id -un)"
+USER_NAME="alice"
 RULES_DIR="/etc/authnft/users"
 HR="--------------------------------------------------------------------------------"
 
