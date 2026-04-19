@@ -4,6 +4,7 @@
 #include "authnft.h"
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
@@ -208,6 +209,22 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
              user, session_pid);
     snprintf(sd->cg_path, sizeof(sd->cg_path), "authnft.slice/%s",
              sd->scope_unit);
+    /* Build per-session nft names. Usernames may contain '-' and '.'
+     * which are not valid in nftables identifiers (hyphen is parsed as
+     * subtraction). Replace with '_'. */
+    char safe_user[MAX_USER_LEN + 1];
+    snprintf(safe_user, sizeof(safe_user), "%s", user);
+    for (char *p = safe_user; *p; p++) {
+        if (*p == '-' || *p == '.') *p = '_';
+    }
+    snprintf(sd->chain_name, sizeof(sd->chain_name), "session_%s_%d",
+             safe_user, session_pid);
+    snprintf(sd->set_v4, sizeof(sd->set_v4), "session_%s_%d_v4",
+             safe_user, session_pid);
+    snprintf(sd->set_v6, sizeof(sd->set_v6), "session_%s_%d_v6",
+             safe_user, session_pid);
+    snprintf(sd->set_cg, sizeof(sd->set_cg), "session_%s_%d_cg",
+             safe_user, session_pid);
     memcpy(sd->remote_ip, norm_ip, sizeof(sd->remote_ip));
     if (claims_env) {
         (void)keyring_fetch_tag(pamh, claims_env, sd->claims_tag,
@@ -221,9 +238,7 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
         return PAM_SESSION_ERR;
     }
 
-    int rc = nft_handler_setup(pamh, user, sd->cg_path,
-                               norm_ip[0] ? norm_ip : NULL,
-                               sd->claims_tag[0] ? sd->claims_tag : NULL);
+    int rc = nft_handler_setup(pamh, user, sd);
     if (rc == PAM_SUCCESS) {
         (void)session_file_write(pamh, sd, user, session_pid);
         event_open_emit(pamh, sd, user, session_pid);
@@ -250,13 +265,12 @@ PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
         return PAM_SUCCESS;
     }
 
-    DEBUG_PRINT("PAM: close_session for user=%s cg_path=%s ip='%s'",
-                user, sd->cg_path, sd->remote_ip);
+    DEBUG_PRINT("PAM: close_session for user=%s chain=%s handle=%" PRIu64,
+                user, sd->chain_name, sd->jump_handle);
 
-    const char *ip = sd->remote_ip[0] ? sd->remote_ip : NULL;
-    if (nft_handler_cleanup(pamh, user, sd->cg_path, ip) != PAM_SUCCESS)
+    if (nft_handler_cleanup(pamh, user, sd) != PAM_SUCCESS)
         pam_syslog(pamh, LOG_WARNING,
-                   "authnft: cleanup failed for %s — element may persist", user);
+                   "authnft: cleanup failed for %s — per-session state may persist", user);
 
     (void)session_file_remove(pamh, sd->scope_unit);
     event_close_emit(pamh, sd, user);

@@ -20,9 +20,6 @@
 /* --- Configuration Constants --- */
 #define RULES_DIR "/etc/authnft/users"
 #define TABLE_NAME "authnft"
-#define SET_V4   "session_map_ipv4"
-#define SET_V6   "session_map_ipv6"
-#define SET_CG   "session_map_cg"
 
 /* --- Buffer Management --- */
 #define CMD_BUF_SIZE 2048
@@ -33,6 +30,8 @@
 #define CORRELATION_ID_MAX 64 /* journal/audit correlation token */
 #define INODES_CAP 64      /* cap on /proc/<pid>/fd inode scan in peer_lookup */
 #define CGROUP_PATH_MAX 192 /* "authnft.slice/authnft-<user>-<pid>.scope" + slack */
+#define SET_NAME_MAX 80    /* "session_<user>_<pid>_v4" */
+#define CHAIN_NAME_MAX 80  /* "session_<user>_<pid>" */
 
 /*
  * Session data persisted via pam_set_data("authnft_cg_id", ...).
@@ -43,13 +42,17 @@
  * `cg_path` holds the session's cgroupv2 path (without leading slash),
  * e.g. "authnft.slice/authnft-alice-12345.scope". This is the value the
  * kernel resolves to a cgroupv2 inode at nft insert time via the
- * `socket cgroupv2 level 2` expression. Depth is a project invariant
- * (HANDOFF §3.1): path MUST have exactly two components, validated at
- * open_session by util_get_cgroup_path.
+ * `socket cgroupv2 level 2` expression.
  *
  * `scope_unit` is the systemd transient-scope unit name,
  * "authnft-<user>-<pid>.scope". Used as the filename key for
  * /run/authnft/sessions/<scope_unit>.json and as an audit field.
+ *
+ * Per-session nftables state: each session gets its own chain
+ * (`chain_name`) and three sets (`set_v4`, `set_v6`, `set_cg`).
+ * A jump rule in the shared `filter` chain dispatches to the
+ * per-session chain; `jump_handle` stores its nftables handle for
+ * cleanup. This is the pf-anchor-equivalent isolation model.
  *
  * `correlation_id` is a short opaque token used to join the open and
  * close audit events for the same session across the systemd journal.
@@ -62,30 +65,37 @@ typedef struct {
     char     remote_ip[IP_STR_MAX];
     char     claims_tag[CLAIMS_TAG_MAX];  /* "" if no keyring source configured */
     char     correlation_id[CORRELATION_ID_MAX];
+    char     chain_name[CHAIN_NAME_MAX];
+    char     set_v4[SET_NAME_MAX];
+    char     set_v6[SET_NAME_MAX];
+    char     set_cg[SET_NAME_MAX];
+    uint64_t jump_handle;                 /* 0 = not captured */
 } authnft_session_t;
 
 /*
  * nft_handler_setup:
- * Checks 'authnft' group membership, validates the user's root-owned fragment,
- * and inserts the session element. If remote_ip is NULL or empty, the element
- * is inserted into session_map_cg (cgroup-only); otherwise it goes into the
- * v4/v6 map selected by the address family. `cg_path` is the cgroupv2 path
- * (without leading slash) that the kernel will resolve to a u64 inode at
- * rule-load time via `socket cgroupv2 level 2`.
+ * Checks 'authnft' group membership, validates the user's root-owned fragment
+ * (verb scan, include-path check, reserved-define check), creates the
+ * per-session chain and three per-session sets, inserts the session element,
+ * captures the jump-rule handle, and loads the fragment with nftables
+ * `define` variables for the four session placeholders ($session_v4,
+ * $session_v6, $session_cg, $session_chain).
+ *
+ * On success, sd->jump_handle is populated. On failure, any partially
+ * created nftables state is best-effort cleaned up.
  */
-int nft_handler_setup(pam_handle_t *pamh, const char *user, const char *cg_path,
-                      const char *remote_ip, const char *claims_tag);
+int nft_handler_setup(pam_handle_t *pamh, const char *user,
+                      authnft_session_t *sd);
 
 /*
  * nft_handler_cleanup:
- * Atomically removes the element inserted at open_session. Set selection
- * mirrors nft_handler_setup: NULL/empty remote_ip targets session_map_cg.
- * `cg_path` is passed directly from PAM data to avoid re-resolution after
- * scope teardown (and because sd_pid_get_cgroup on the close_session pid
- * would return the wrong cgroup once the scope has been reaped).
+ * Tears down the per-session nftables state: deletes the jump rule by
+ * handle, flushes and deletes the per-session chain, deletes the three
+ * per-session sets. Best-effort; logs on failure, returns PAM_SUCCESS
+ * so the session can always unwind.
  */
-int nft_handler_cleanup(pam_handle_t *pamh, const char *user, const char *cg_path,
-                        const char *remote_ip);
+int nft_handler_cleanup(pam_handle_t *pamh, const char *user,
+                        const authnft_session_t *sd);
 
 /*
  * bus_handler_start:

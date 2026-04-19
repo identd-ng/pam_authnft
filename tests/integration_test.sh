@@ -103,7 +103,7 @@ pass "Group member correctly denied"
 
 # 10.2: Group member allowed when fragment exists and is valid
 printf "${YELLOW}10.2: Success for '$TEST_USER' (valid fragment)${RESET}\n"
-echo "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept" \
+echo 'add rule inet authnft @session_chain socket cgroupv2 level 2 . ip saddr @session_v4 accept' \
     > "$RULES_DIR/$TEST_USER"
 chown root:root "$RULES_DIR/$TEST_USER"
 chmod 644 "$RULES_DIR/$TEST_USER"
@@ -126,7 +126,7 @@ pass "Root pass-through verified"
 # Write a clean valid fragment for subsequent stages
 FRAGMENT="$RULES_DIR/$TEST_USER"
 valid_fragment() {
-    echo "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept" \
+    echo 'add rule inet authnft @session_chain socket cgroupv2 level 2 . ip saddr @session_v4 accept' \
         > "$FRAGMENT"
     chown root:root "$FRAGMENT"
     chmod 644 "$FRAGMENT"
@@ -150,25 +150,26 @@ if pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/nu
 fi
 pass "World-writable fragment correctly rejected"
 
-# 10.6: Invariant #1 — session data persisted via PAM data (cg_path +
-# scope_unit) must survive into close_session so the set element is
-# deleted cleanly. Running open_session and close_session in one
+# 10.6: Invariant #1 — session data persisted via PAM data must survive
+# into close_session so the per-session chain, sets, and jump rule are
+# torn down cleanly. Running open_session and close_session in one
 # pamtester invocation keeps the PAM handle alive; if the close path
-# ever regresses to re-resolving the cgroup from getpid(), the element
-# will not be deleted and this assertion will catch it.
-# Flush residual elements from prior stages (10.2's separate-handle close
-# no-ops per invariant #6, leaving its element behind with a 24h timeout).
-nft flush set inet authnft session_map_ipv4 2>/dev/null || true
-printf "${YELLOW}10.6: Element cleanup via persisted session data${RESET}\n"
+# regresses, per-session state persists in the nft table.
+# Flush residual per-session state from 10.2 (whose close ran in a
+# separate handle and no-opped per invariant #6).
+nft delete table inet authnft 2>/dev/null || true
+printf "${YELLOW}10.6: Per-session cleanup via persisted session data${RESET}\n"
 valid_fragment
 if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" \
         open_session close_session > /dev/null 2>&1; then
     fail "open+close in a single PAM handle failed"
 fi
-if nft list set inet authnft session_map_ipv4 2>/dev/null | grep -q 'elements = {'; then
-    fail "Element persisted after close_session — session-data persistence path broken"
+TABLE_STATE=$(nft list table inet authnft 2>/dev/null || true)
+if echo "$TABLE_STATE" | grep -qE '(chain|set) session_'; then
+    echo "$TABLE_STATE" >&2
+    fail "Per-session chain/sets persisted after close_session"
 fi
-pass "Element deleted at close_session"
+pass "Per-session state cleaned up at close_session"
 
 # 10.7: Invariant #6 — close_session is best-effort. A close with no prior
 # open (no stored session data in PAM) must still return PAM_SUCCESS so
@@ -186,25 +187,29 @@ pass "close_session best-effort semantics preserved"
 # this — the test exists to catch a future libnftables parser regression.
 printf "${YELLOW}10.8: Multi-fragment composition (transitive include)${RESET}\n"
 GROUP_FRAG_10_8="/etc/authnft/composed-10-8.nft"
-cat > "$GROUP_FRAG_10_8" <<NFT
-add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 counter accept comment "AUTHNFT-IT-GROUP"
+# Included group fragment does NOT receive placeholder substitution
+# (only the top-level fragment does). It uses the shared filter chain
+# with a non-placeholder rule — testing that include composition works
+# through the buffer-mode loading pipeline.
+cat > "$GROUP_FRAG_10_8" <<'NFT'
+add rule inet authnft filter counter accept comment "AUTHNFT-IT-GROUP"
 NFT
 chown root:root "$GROUP_FRAG_10_8"
 chmod 644 "$GROUP_FRAG_10_8"
 cat > "$FRAGMENT" <<NFT
 include "$GROUP_FRAG_10_8"
-add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 counter accept comment "AUTHNFT-IT-USER"
+add rule inet authnft @session_chain counter accept comment "AUTHNFT-IT-USER"
 NFT
 chown root:root "$FRAGMENT"
 chmod 644 "$FRAGMENT"
 if ! pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/null 2>&1; then
     fail "Composed-fragment open_session failed — check journalctl -t authnft"
 fi
-CHAIN_STATE=$(nft list chain inet authnft filter 2>&1)
-if ! echo "$CHAIN_STATE" | grep -q "AUTHNFT-IT-GROUP"; then
-    fail "Transitive include did not land the group fragment's rule"
+TABLE_STATE=$(nft list table inet authnft 2>&1)
+if ! echo "$TABLE_STATE" | grep -q "AUTHNFT-IT-GROUP"; then
+    fail "Transitive include did not land the group fragment's rule (define vars not propagated)"
 fi
-if ! echo "$CHAIN_STATE" | grep -q "AUTHNFT-IT-USER"; then
+if ! echo "$TABLE_STATE" | grep -q "AUTHNFT-IT-USER"; then
     fail "User fragment's own rule did not land alongside the include"
 fi
 # Close in a new handle; per invariant #6 this no-ops. Residual set
