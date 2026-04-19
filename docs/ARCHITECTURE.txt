@@ -230,3 +230,9 @@ Known limits
   before the module runs), the resolved cgroup may differ from the
   session's eventual cgroup.
 - Fragment semantic errors pass validation; administrators own them.
+- All user fragments share the `inet authnft filter` chain and the
+  three named sets. A drop rule in one user's fragment fires for any
+  active session whose element is in the shared set, not just the
+  fragment author's. Fragments should use accept-only rules; per-session
+  deny-default enforcement requires per-session chain isolation.
+  Integration test 10.13 verifies this cross-session interference.

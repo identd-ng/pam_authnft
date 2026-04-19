@@ -461,4 +461,79 @@ fi
 nft delete table inet authnft_1012 2>/dev/null
 pass "10.12: pre-scope socket did NOT match (alloc-time cgroup inheritance confirmed)"
 
+# 10.13: Cross-session interference (shared-set drop rule).
+#
+# Proves that a drop rule matching @session_map in a shared chain fires
+# for ANY active session, not just the fragment author's. Two scopes
+# (alice, bob) insert elements into the same set. A deny-by-default
+# ruleset allows port 22 and drops everything else. A probe from bob's
+# scope to a non-allowed port hits the deny rule — even though the deny
+# rule was written for alice's policy.
+#
+# This is the expected (broken) behavior of the shared-set model. The
+# test documents it as a known limit, not a regression to fix.
+printf "${YELLOW}10.13: Cross-session interference (shared-set drop rule)${RESET}\n"
+
+s1013_alice="/authnft.slice/authnft-1013-alice.scope"
+s1013_bob="/authnft.slice/authnft-1013-bob.scope"
+
+systemd-run --scope --slice=authnft.slice --unit=authnft-1013-alice \
+    sleep 60 >/dev/null 2>&1 &
+S1011_PIDS+=($!)
+systemd-run --scope --slice=authnft.slice --unit=authnft-1013-bob \
+    sleep 60 >/dev/null 2>&1 &
+S1011_PIDS+=($!)
+sleep 0.5
+
+if [[ ! -d "/sys/fs/cgroup${s1013_alice}" ]] || \
+   [[ ! -d "/sys/fs/cgroup${s1013_bob}" ]]; then
+    pass "10.13: [SKIP] could not create both probe scopes"
+    printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
+    exit 0
+fi
+
+# Isolated table with deny-by-default rules.
+nft add table inet authnft_1013
+nft add set inet authnft_1013 probe_set \
+    '{ typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }'
+nft add chain inet authnft_1013 input \
+    '{ type filter hook input priority 12; policy accept; }'
+# Accept port 22 for matching sessions (alice's "intended" allowlist).
+nft add rule inet authnft_1013 input \
+    socket cgroupv2 level 2 . ip saddr @probe_set \
+    tcp dport 22 accept
+# Count everything else from matching sessions (alice's deny-default).
+nft add rule inet authnft_1013 input \
+    socket cgroupv2 level 2 . ip saddr @probe_set \
+    counter comment '"cross-session-drop"'
+
+# Insert elements for BOTH scopes.
+nft add element inet authnft_1013 probe_set \
+    '{ "authnft.slice/authnft-1013-alice.scope" . 127.0.0.5 timeout 1h }'
+nft add element inet authnft_1013 probe_set \
+    '{ "authnft.slice/authnft-1013-bob.scope" . 127.0.0.6 timeout 1h }'
+
+# Listener in bob's scope on port 18083.
+sh -c '
+    echo $$ > /sys/fs/cgroup'"${s1013_bob}"'/cgroup.procs
+    echo OK | exec nc -l 127.0.0.1 18083
+' &
+S1011_PIDS+=($!)
+sleep 0.5
+
+# Probe from bob's source (127.0.0.6) — NOT port 22, so the accept
+# doesn't fire. If the counter increments, alice's deny-default
+# rule matched bob's traffic via the shared set.
+timeout 5 nc -w3 127.0.0.1 18083 --source 127.0.0.6 </dev/null >/dev/null 2>&1 || true
+
+CG_PKTS=$(nft list chain inet authnft_1013 input 2>/dev/null \
+    | grep 'cross-session-drop' | grep -oP 'packets \K[0-9]+')
+if [[ -n "$CG_PKTS" && "$CG_PKTS" -gt 0 ]]; then
+    pass "10.13: cross-session interference confirmed ($CG_PKTS packets matched bob via shared set)"
+else
+    fail "10.13: expected cross-session interference but counter=0"
+fi
+
+nft delete table inet authnft_1013 2>/dev/null
+
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
