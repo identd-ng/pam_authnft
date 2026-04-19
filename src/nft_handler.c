@@ -118,11 +118,20 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user, const char *cg_path,
     if (!ctx) return PAM_SERVICE_ERR;
 
     /*
-     * Two separate nft_run_cmd_from_buffer calls are required: nftables does not
-     * support 'include' inside nested declarative blocks via the libnftables API.
-     * The element is inserted first so the set exists before any rules in the
-     * fragment can reference it. session_map_cg exists so that fragments can
-     * still gate by cgroup when PAM_RHOST is absent or unparseable.
+     * Two separate nft_run_cmd_from_buffer calls are required. Call (a)
+     * creates the table/sets/chain and inserts the session element; call (b)
+     * loads the user fragment via `include`. The split ensures the set
+     * definitions are in libnftables' evaluator cache before the fragment's
+     * rules reference @session_map_ipv{4,6} — a single buffer containing
+     * both the `add set` and a rule referencing that set would fail because
+     * the evaluator hasn't registered the set type at the point it parses
+     * the rule. (nftables grammar does permit `include` inside blocks; the
+     * constraint is the evaluator's single-pass type resolution, not syntax.)
+     *
+     * This two-call design is NOT atomic: if call (a) succeeds and call (b)
+     * fails (fragment syntax error), the element is left in the set with no
+     * corresponding chain rule. The 24-hour element timeout is the safety
+     * net. See docs/INTEGRATIONS.txt for the failure-mode documentation.
      */
     /* claims_tag is already sanitized by keyring_fetch_tag to a quote-free,
      * control-free subset; embed it verbatim inside the nft comment. */

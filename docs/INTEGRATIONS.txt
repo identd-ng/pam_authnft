@@ -320,6 +320,18 @@ net. Primary cleanup is close_session. Fragments MUST NOT set their
 own elements in session_map_ipv{4,6}/session_map_cg; these sets are
 owned by pam_authnft.
 
+The nft transaction is two separate nft_run_cmd_from_buffer calls:
+call (a) creates the table/sets/chain and inserts the session element;
+call (b) loads the user fragment via `include`. This is NOT atomic:
+if call (a) succeeds and call (b) fails (e.g., a syntax error in the
+fragment), the session element is left in the set with no
+corresponding chain rule. The element has no matching rule to
+reference it and expires after the 1-day timeout. This is the
+expected failure mode — fragment syntax errors are logged via
+pam_syslog and pam_error, and the session is denied with
+PAM_AUTH_ERR. The orphaned element is harmless (it matches nothing
+without a rule) and self-cleans.
+
 4.6 Composing fragments via nftables `include`
 
 libnftables resolves `include` directives transitively when processing

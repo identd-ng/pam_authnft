@@ -47,18 +47,18 @@ show_firewall() {
     echo "$HR"
     echo ">> EXAMPLE 1: ACCEPT SESSION TRAFFIC <<"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
-    printf "add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 accept\n"
-    printf "add rule inet authnft filter meta cgroup . ip6 saddr @session_map_ipv6 accept\n\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip6 saddr @session_map_ipv6 accept\n\n"
 
     echo "$HR"
     echo ">> EXAMPLE 2: RESTRICT TO SPECIFIC PORTS <<"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
-    printf "add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 tcp dport { 80, 443 } accept\n\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 tcp dport { 80, 443 } accept\n\n"
 
     echo "$HR"
     echo ">> EXAMPLE 3: LOG AND ACCEPT <<"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
-    printf "add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 log prefix \"authnft_%s: \" accept\n\n" "$USER_NAME"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 log prefix \"authnft_%s: \" accept\n\n" "$USER_NAME"
 
     echo "$HR"
     echo ">> EXAMPLE 4: NAT MASQUERADE <<"
@@ -66,12 +66,12 @@ show_firewall() {
     printf "# In postrouting, ip saddr is the server's own IP — not the client's.\n"
     printf "# Use session_map_cg (cgroup-only) to match outbound traffic from this session.\n"
     printf "add chain inet authnft %s_nat { type nat hook postrouting priority srcnat; }\n" "$USER_NAME"
-    printf "add rule inet authnft %s_nat meta cgroup @session_map_cg masquerade\n\n" "$USER_NAME"
+    printf "add rule inet authnft %s_nat socket cgroupv2 level 2 @session_map_cg masquerade\n\n" "$USER_NAME"
 
     echo "$HR"
     echo ">> EXAMPLE 5: TIME-RESTRICTED ACCESS <<"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
-    printf "add rule inet authnft filter meta cgroup . ip saddr @session_map_ipv4 \\\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\n"
     printf "    meta day { \"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\" } hour \"09:00\"-\"17:00\" accept\n"
     echo "$HR"
 }
