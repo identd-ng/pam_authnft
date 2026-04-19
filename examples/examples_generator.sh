@@ -5,7 +5,7 @@
 # Generates example nftables fragments and setup commands for pam_authnft.
 # Usage: examples_generator.sh [-s|-f|-m|-h]
 
-USER_NAME="${1:-$(id -un)}"
+USER_NAME="$(id -un)"
 RULES_DIR="/etc/authnft/users"
 HR="--------------------------------------------------------------------------------"
 
@@ -33,10 +33,10 @@ show_setup() {
     echo "# 3. PAM — add to /etc/pam.d/sshd (after pam_systemd.so)"
     echo "#"
     echo "# Option A: module checks group membership internally."
-    echo "#   Non-members pass through; members without a fragment are denied."
+    echo "# Non-members pass through; members without a fragment are denied."
     printf "session  optional  pam_authnft.so\n\n"
     echo "# Option B: PAM gates on group membership."
-    echo "#   Non-members skip entirely; members without a fragment are denied."
+    echo "# Non-members skip entirely; members without a fragment are denied."
     printf "session  [success=1 default=ignore]  pam_succeed_if.so  user notingroup authnft  quiet\n"
     printf "session  required  pam_authnft.so\n\n"
 
@@ -121,8 +121,8 @@ show_firewall() {
     echo ">> EXAMPLE 5: TIME-RESTRICTED ACCESS <<"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
     printf "add rule inet authnft filter ct state established,related accept\n"
-    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\n"
-    printf "    meta day { \"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\" } hour \"09:00\"-\"17:00\" accept\n"
+    echo 'add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \'
+    echo '    meta day { "Mon","Tue","Wed","Thu","Fri" } hour "09:00"-"17:00" accept'
     echo "$HR"
 }
 
