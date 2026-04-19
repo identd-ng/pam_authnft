@@ -466,18 +466,17 @@ fi
 nft delete table inet authnft_1012 2>/dev/null
 pass "10.12: pre-scope socket did NOT match (alloc-time cgroup inheritance confirmed)"
 
-# 10.13: Cross-session interference (shared-set drop rule).
+# 10.13: Cross-session isolation (per-session sets).
 #
-# Proves that a drop rule matching @session_map in a shared chain fires
-# for ANY active session, not just the fragment author's. Two scopes
-# (alice, bob) insert elements into the same set. A deny-by-default
-# ruleset allows port 22 and drops everything else. A probe from bob's
-# scope to a non-allowed port hits the deny rule — even though the deny
-# rule was written for alice's policy.
+# Verifies that alice's deny rule does NOT affect bob's traffic under
+# the per-session set model. Each session's set contains only its own
+# element; alice's drop rule matching @alice_set cannot match bob's
+# cgroup because bob's element is in @bob_set, not @alice_set.
 #
-# This is the expected (broken) behavior of the shared-set model. The
-# test documents it as a known limit, not a regression to fix.
-printf "${YELLOW}10.13: Cross-session interference (shared-set drop rule)${RESET}\n"
+# Contrast with the pre-Plan-B shared-set model where this test
+# proved interference (bob's element was in the shared set and matched
+# alice's drop rule). The per-session architecture eliminates this.
+printf "${YELLOW}10.13: Cross-session isolation (per-session sets)${RESET}\n"
 
 s1013_alice="/authnft.slice/authnft-1013-alice.scope"
 s1013_bob="/authnft.slice/authnft-1013-bob.scope"
@@ -497,25 +496,33 @@ if [[ ! -d "/sys/fs/cgroup${s1013_alice}" ]] || \
     exit 0
 fi
 
-# Isolated table with deny-by-default rules.
+# Two per-session sets (alice and bob), each with its own element.
+# alice's chain has a deny-by-default rule matching only alice's set.
 nft add table inet authnft_1013
-nft add set inet authnft_1013 probe_set \
+nft add set inet authnft_1013 alice_set \
+    '{ typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }'
+nft add set inet authnft_1013 bob_set \
     '{ typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }'
 nft add chain inet authnft_1013 input \
     '{ type filter hook input priority 12; policy accept; }'
-# Accept port 22 for matching sessions (alice's "intended" allowlist).
-nft add rule inet authnft_1013 input \
-    socket cgroupv2 level 2 . ip saddr @probe_set \
-    tcp dport 22 accept
-# Count everything else from matching sessions (alice's deny-default).
-nft add rule inet authnft_1013 input \
-    socket cgroupv2 level 2 . ip saddr @probe_set \
-    counter comment '"cross-session-drop"'
 
-# Insert elements for BOTH scopes.
-nft add element inet authnft_1013 probe_set \
+# alice's deny-default: allow port 22, count everything else.
+# Matches ONLY @alice_set — bob's element is NOT in this set.
+nft add rule inet authnft_1013 input \
+    socket cgroupv2 level 2 . ip saddr @alice_set \
+    tcp dport 22 accept
+nft add rule inet authnft_1013 input \
+    socket cgroupv2 level 2 . ip saddr @alice_set \
+    counter comment '"alice-deny"'
+
+# bob's accept: matches @bob_set, counts hits.
+nft add rule inet authnft_1013 input \
+    socket cgroupv2 level 2 . ip saddr @bob_set \
+    counter comment '"bob-match"'
+
+nft add element inet authnft_1013 alice_set \
     '{ "authnft.slice/authnft-1013-alice.scope" . 127.0.0.5 timeout 1h }'
-nft add element inet authnft_1013 probe_set \
+nft add element inet authnft_1013 bob_set \
     '{ "authnft.slice/authnft-1013-bob.scope" . 127.0.0.6 timeout 1h }'
 
 # Listener in bob's scope on port 18083.
@@ -526,18 +533,26 @@ sh -c '
 S1011_PIDS+=($!)
 sleep 0.5
 
-# Probe from bob's source (127.0.0.6) — NOT port 22, so the accept
-# doesn't fire. If the counter increments, alice's deny-default
-# rule matched bob's traffic via the shared set.
+# Probe from bob's source — NOT port 22. Under the old shared-set
+# model, alice's deny counter would fire. With per-session sets,
+# alice's deny counter should NOT fire (bob's element is in bob_set,
+# not alice_set). bob's own counter SHOULD fire.
 timeout 5 nc -w3 127.0.0.1 18083 --source 127.0.0.6 </dev/null >/dev/null 2>&1 || true
 
-CG_PKTS=$(nft list chain inet authnft_1013 input 2>/dev/null \
-    | grep 'cross-session-drop' | grep -oP 'packets \K[0-9]+')
-if [[ -n "$CG_PKTS" && "$CG_PKTS" -gt 0 ]]; then
-    pass "10.13: cross-session interference confirmed ($CG_PKTS packets matched bob via shared set)"
-else
-    fail "10.13: expected cross-session interference but counter=0"
+ALICE_PKTS=$(nft list chain inet authnft_1013 input 2>/dev/null \
+    | grep 'alice-deny' | grep -oP 'packets \K[0-9]+')
+BOB_PKTS=$(nft list chain inet authnft_1013 input 2>/dev/null \
+    | grep 'bob-match' | grep -oP 'packets \K[0-9]+')
+
+if [[ -n "$ALICE_PKTS" && "$ALICE_PKTS" -gt 0 ]]; then
+    nft list table inet authnft_1013 >&2 2>/dev/null || true
+    fail "10.13: alice's deny counter fired ($ALICE_PKTS) on bob's traffic — isolation broken"
 fi
+if [[ -z "$BOB_PKTS" || "$BOB_PKTS" -eq 0 ]]; then
+    nft list table inet authnft_1013 >&2 2>/dev/null || true
+    fail "10.13: bob's own counter=0 — set match not firing at all"
+fi
+pass "10.13: per-session isolation verified (alice=0, bob=$BOB_PKTS — no cross-session interference)"
 
 nft delete table inet authnft_1013 2>/dev/null
 
