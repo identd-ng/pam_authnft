@@ -44,16 +44,19 @@ at rule-load time via the `socket cgroupv2 level 2` expression; no
 `stat(2)` is performed by the module.
 
 At packet classification time, `socket cgroupv2 level 2` in nftables
-reads the cgroupv2 inode from the socket's originating cgroup. Rules
-keyed on the named set `session_map_ipv{4,6}` therefore match every
-process under the session scope without ever naming uids, pids, or
-usernames.
+reads the cgroupv2 inode from the socket's originating cgroup. Each
+session gets its own chain and three per-session sets
+(`session_<user>_<pid>_v4`, `_v6`, `_cg`); a jump rule in the shared
+`filter` chain dispatches to the per-session chain. This is the
+pf-anchor-equivalent isolation model: one session's rules cannot
+match another session's traffic.
 
-A third set, `session_map_cg`, is keyed on cgroup only. It is used
-when `PAM_RHOST` is absent or not a parseable IP literal — most
-commonly when sshd is configured with `UseDNS yes` and hands PAM a
-hostname. Under the default `rhost_policy=lax`, the session is still
-pinned by cgroup; only the src_ip leg of the tuple is dropped.
+The per-session element goes into one of the three sets based on the
+resolved IP family. The cgroup-only set (`_cg`) is used when
+`PAM_RHOST` is absent or not a parseable IP literal — most commonly
+when sshd is configured with `UseDNS yes` and hands PAM a hostname.
+Under the default `rhost_policy=lax`, the session is still pinned by
+cgroup; only the src_ip leg of the tuple is dropped.
 `rhost_policy=strict` restores the historical hard deny.
 
 An optional `claims_env=NAME` argument tells the module to look up the
@@ -92,24 +95,31 @@ Open-session sequence
          job mode = "fail"
     6. cg_path constructed deterministically from scope_unit
        ("authnft.slice/authnft-<user>-<pid>.scope")
-    7. cg_path + scope_unit + remote_ip persisted via
-       pam_set_data("authnft_cg_id", authnft_session_t)
+    7. cg_path + scope_unit + per-session chain/set names + remote_ip
+       persisted via pam_set_data("authnft_cg_id", authnft_session_t)
        (the free callback is registered so PAM reclaims it)
     8. nft_handler_setup:
          - getgrnam("authnft") + getpwnam(user); non-members pass through
          - stat(fragment): st_uid == 0 and !(mode & S_IWOTH)
-         - call 1: add table/sets/chain + insert element into
-                   session_map_ipv{4,6} as { "cg_path" . src_ip ... } or
-                   session_map_cg as { "cg_path" ... } when src_ip is absent
-         - call 2: include "<fragment>"
+         - content validation: verb scan (reject flush/delete/reset/
+           list/rename), include-path check (absolute, under
+           /etc/authnft/, no globs)
+         - call 1: add table + shared filter chain + ct state rule +
+                   per-session chain + 3 per-session sets + element
+         - call 2 (ECHO|HANDLE): add jump rule in shared filter chain;
+                   parse kernel-assigned handle from output buffer
+         - call 3: read fragment, substitute four placeholders
+                   (@session_v4/v6/cg/chain → live names), execute
 
-Each call is a separate nft_run_cmd_from_buffer. libnftables does not
-support `include` inside declarative blocks; the element is inserted
-first so the fragment can reference the set.
+Placeholder substitution is token-aware (skips #comments and "..."
+strings) and covers the top-level fragment only. Files pulled in
+via nftables `include` are parsed by libnftables directly and do
+not receive substitution. This is a design choice: per-session
+rules use placeholders; shared includes use the shared filter chain.
 
-The fragment in call 2 may itself contain `include` directives;
-libnftables resolves these transitively at parse time. pam_authnft
-performs ownership and mode checks only on the top-level fragment at
+The fragment in call 3 may contain `include` directives; libnftables
+resolves these transitively at parse time. pam_authnft performs
+ownership and mode checks only on the top-level fragment at
 /etc/authnft/users/<user>. See docs/INTEGRATIONS.txt §4.6 for the
 composition contract, security obligations on included files, and
 cycle-detection guidance.
@@ -119,18 +129,18 @@ Close-session sequence
 ----------------------
 
     1. Root short-circuits
-    2. cg_path retrieved from PAM data (not re-resolved from the PID —
-       the transient scope may already be gone)
-    3. PAM_RHOST read
-    4. nft_handler_cleanup: delete element { "cg_path" . src_ip } from
-       the IPv4 or IPv6 set
-    5. /run/authnft/sessions/<scope_unit>.json unlinked
-    6. event_close_emit: AUTHNFT_EVENT=close with the open-side
+    2. Session data (chain name, set names, jump handle) retrieved
+       from PAM data
+    3. nft_handler_cleanup: delete jump rule by handle, flush and
+       delete per-session chain, delete three per-session sets
+       (single transaction)
+    4. /run/authnft/sessions/<scope_unit>.json unlinked
+    5. event_close_emit: AUTHNFT_EVENT=close with the open-side
        correlation token (see "Audit events" below)
 
-Cleanup failures log a warning and return PAM_SUCCESS. The 24-hour
-element timeout catches orphans. Session-file orphans are reaped by
-systemd-tmpfiles (MaxAge=7d) per data/authnft.tmpfiles.
+Cleanup failures log a warning and return PAM_SUCCESS.
+Session-file orphans are reaped by systemd-tmpfiles (MaxAge=7d)
+per data/authnft.tmpfiles.
 
 
 Session-identity files
@@ -190,11 +200,11 @@ Trust model
       before the PAM session stack runs). These carry sshd's cgroup
       (typically `system.slice`). `socket cgroupv2 level 2` returns
       that cgroup, NOT the session scope. The match does not fire.
-  Class B traffic survives because `ct state established,related
-  accept` — the standard nftables stateful-chain idiom — short-
-  circuits before the cgroup match. Fragments SHOULD include this
-  rule ahead of any `socket cgroupv2` match. Integration test 10.12
-  validates this invariant empirically.
+  Class B traffic survives because pam_authnft adds
+  `ct state established,related accept` to the shared `filter`
+  chain ahead of any jump rules. This short-circuits before
+  the cgroup match. Integration test 10.12 validates this
+  invariant empirically.
 
 
 Seccomp
@@ -212,8 +222,9 @@ What does not live here
 
 - Authentication: pam_authnft is a session module, not an auth module.
   `PAM_USER` is accepted from whatever auth stack ran before it.
-- Fragment content: only structural validation happens
-  (ownership, mode, syntactic check by libnftables). Semantic choices
+- Fragment content: structural and content validation happens
+  (ownership, mode, verb scan, include-path check, syntactic check
+  by libnftables). Semantic choices
   — which ports to open, whether to NAT, etc. — are the administrator's.
 - Per-session resource limits: provided by systemd via the transient
   scope and the parent `authnft.slice`. See `man
@@ -230,9 +241,12 @@ Known limits
   before the module runs), the resolved cgroup may differ from the
   session's eventual cgroup.
 - Fragment semantic errors pass validation; administrators own them.
-- All user fragments share the `inet authnft filter` chain and the
-  three named sets. A drop rule in one user's fragment fires for any
-  active session whose element is in the shared set, not just the
-  fragment author's. Fragments should use accept-only rules; per-session
-  deny-default enforcement requires per-session chain isolation.
-  Integration test 10.13 verifies this cross-session interference.
+- Fragment content validation rejects flush/delete/reset/list/rename
+  verbs and include paths outside /etc/authnft/. This is defence in
+  depth, not a primary trust boundary (fragments are root-owned).
+- Placeholder substitution (@session_v4, @session_v6, @session_cg,
+  @session_chain) is applied to the top-level fragment only. Files
+  pulled in via `include` do not receive substitution. Hand-written
+  fragments that use a placeholder inside an included file will fail
+  to load (detectable error, not silent).
+  Integration test 10.13 verifies cross-session isolation.

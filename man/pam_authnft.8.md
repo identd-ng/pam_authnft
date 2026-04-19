@@ -27,10 +27,10 @@ The module exports only **pam_sm_open_session** and
 **rhost_policy=lax** (default)
 :   If *PAM_RHOST* parses as an IPv4 or IPv6 literal, it is normalized
     to canonical form (IPv6 v4-mapped addresses are extracted to plain
-    IPv4) and the session element is bound into *session_map_ipv4* or
-    *session_map_ipv6* as *{ cgroup_path . src_ip }*. Otherwise —
+    IPv4) and the session element is bound into the per-session IPv4
+    or IPv6 set as *{ cgroup_path . src_ip }*. Otherwise —
     *PAM_RHOST* missing, a hostname (*UseDNS yes* in sshd), or
-    unparseable — fall back to *session_map_cg*, which is keyed on
+    unparseable — fall back to the per-session cgroup-only set, keyed on
     *cgroup_path* alone. Session identity is still enforced; only the
     src_ip leg is dropped.
 
@@ -104,32 +104,33 @@ On session open, the module:
    name (e.g., *authnft.slice/authnft-alice-12345.scope*). The kernel
    resolves this path to a cgroupv2 inode at nft insert time; no
    **stat**(2) is performed by the module.
-7. Persists session state (cgroup path + scope unit + normalized
-   remote IP + optional sanitized claims tag + correlation token)
-   in PAM data under the key *authnft_cg_id* so
-   **pam_sm_close_session** can
-   delete the exact element inserted from the correct set and reuse
-   the correlation token in the close-side audit event. The key name
-   is retained for compatibility; the stored value shape is an
-   internal ABI.
+7. Persists session state (cgroup path, scope unit, per-session
+   chain/set names, jump-rule handle, normalized remote IP, optional
+   claims tag, correlation token) in PAM data under the key
+   *authnft_cg_id*. The key name is retained for compatibility; the
+   stored value shape is an internal ABI.
 8. Verifies the user is a member of the **authnft** group. Non-members
    pass through with **PAM_SUCCESS**.
-9. Validates the fragment at */etc/authnft/users/\<user\>*: it must
-   exist, be owned by UID 0, and not be world-writable.
-10. Issues two libnftables calls:
-    - *add table inet authnft*; *add set session_map_ipv4 { typeof
-      socket cgroupv2 level 2 . ip saddr; flags timeout; }*; the
-      corresponding IPv6 set; *add set session_map_cg { typeof socket
-      cgroupv2 level 2; flags timeout; }*; *add chain filter { type
-      filter hook input priority filter - 1; policy accept; }*; *add
-      element* into either *session_map_ipv{4,6}* as
-      *{ "cg_path" . src_ip ... }* or into *session_map_cg* as
-      *{ "cg_path" ... }*.
-    - *include "/etc/authnft/users/\<user\>"* at the top level.
+9. Validates the fragment at */etc/authnft/users/\<user\>*: must be
+   root-owned, not world-writable. Content validation rejects
+   disallowed verbs (*flush*, *delete*, *reset*, *list*, *rename*)
+   and include paths outside */etc/authnft/*.
+10. Issues three libnftables calls:
+    - **Call 1**: *add table*, shared *filter* chain with
+      *ct state established,related accept*, per-session chain
+      *session_\<user\>_\<pid\>*, three per-session sets, session
+      element.
+    - **Call 2** (ECHO|HANDLE): *add rule* jump to per-session chain;
+      parse kernel-assigned handle from output buffer.
+    - **Call 3**: read fragment, substitute four placeholders
+      (*@session_v4*, *@session_v6*, *@session_cg*, *@session_chain*)
+      with live per-session names, execute.
 
-On session close, the stored session state is retrieved from PAM data
-and the element is deleted atomically from the set it was inserted
-into. Cleanup failures are logged but do not prevent session teardown.
+On session close, the stored session state is retrieved from PAM data.
+The jump rule is deleted by handle, the per-session chain is flushed
+and deleted, and the three per-session sets are deleted (single
+transaction). Cleanup failures are logged but do not prevent session
+teardown.
 
 # FILES
 

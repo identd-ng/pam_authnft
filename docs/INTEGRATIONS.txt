@@ -169,7 +169,7 @@ pam_authnft imposes no structure. Producers MAY ship:
     runbook=RB-0091,shift=night
 
 — anything readable to an operator running `nft list set inet
-authnft session_map_cg`. The contract is "printable ASCII, bounded
+authnft session_*_cg`. The contract is "printable ASCII, bounded
 length, producer-defined meaning." pam_authnft does not parse,
 interpret, or validate the payload structure; it is an opaque tag
 displayed verbatim (after sanitization) in the element comment.
@@ -261,44 +261,59 @@ brokers, and policy engines.
 
 4.2 Sets available to the fragment
 
-pam_authnft creates three named sets in `table inet authnft` before
-including the fragment:
+pam_authnft creates three per-session sets in `table inet authnft`
+before loading the fragment. Fragments reference them via four
+placeholders that are substituted at session-open time:
 
-    session_map_ipv4   typeof socket cgroupv2 level 2 . ip saddr;  flags timeout
-    session_map_ipv6   typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout
-    session_map_cg     typeof socket cgroupv2 level 2;             flags timeout
+    @session_v4     per-session set: socket cgroupv2 level 2 . ip saddr
+    @session_v6     per-session set: socket cgroupv2 level 2 . ip6 saddr
+    @session_cg     per-session set: socket cgroupv2 level 2 (cgroup only)
+    @session_chain  per-session chain name (@ stripped, bare identifier)
 
 A session element goes into exactly one set: IPv4 addresses (including
 v4-mapped v6 addresses extracted to plain IPv4 during normalization)
-land in session_map_ipv4; pure IPv6 addresses land in session_map_ipv6;
-absent or unparseable PAM_RHOST values land in session_map_cg.
+land in the v4 set; pure IPv6 addresses in v6; absent or unparseable
+PAM_RHOST values in the cg-only set.
 
-Fragments MAY reference these sets in match expressions:
+Substitution is applied to the top-level fragment only. Files pulled
+in via nftables `include` are parsed by libnftables directly and do
+not receive substitution. Each session's nft_ctx is independent;
+concurrent sessions never share variable state.
 
-    add rule inet authnft filter \
-        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 ct state new \
+Fragments reference per-session sets and chain via placeholders:
+
+    add rule inet authnft @session_chain \
+        socket cgroupv2 level 2 . ip saddr @session_v4 \
         tcp dport { 22, 443 } accept
 
-    add rule inet authnft filter \
-        socket cgroupv2 level 2 @session_map_cg \
-        ct state new tcp dport 8080 accept
+    add rule inet authnft @session_chain \
+        socket cgroupv2 level 2 @session_cg \
+        tcp dport 8080 accept
 
-Fragments SHOULD NOT redeclare these sets. A redeclaration with an
-incompatible type would fail the transaction and deny the session.
+Fragments SHOULD NOT redeclare per-session sets. A redeclaration with
+an incompatible type would fail the transaction and deny the session.
 
-4.3 Chain available to the fragment
+4.3 Chains available to the fragment
 
-pam_authnft creates a base chain:
+pam_authnft creates a shared base chain and a per-session chain:
 
     chain filter {
         type filter hook input priority filter - 1;
         policy accept;
+        ct state established,related accept
+        jump session_<user>_<pid>     # one per active session
     }
 
-Fragments typically add rules into this chain via
-`add rule inet authnft filter ...`. Fragments MAY create their own
-chains under `table inet authnft`; these are not cleaned up by
-pam_authnft on close_session and persist for the table's lifetime.
+    chain session_<user>_<pid> {
+        # fragment rules land here via @session_chain placeholder
+    }
+
+Fragments add rules into their per-session chain via
+`add rule inet authnft @session_chain ...`. Fragments MAY also add
+rules to the shared `filter` chain, but SHOULD NOT use drop/reject
+actions there (those rules persist across sessions and affect all
+traffic). Fragments MAY create additional chains; these are not
+cleaned up by pam_authnft and persist for the table's lifetime.
 
 4.4 Programmatic fragment generation
 
@@ -316,21 +331,16 @@ re-read on every open_session.
 4.5 Element timeout
 
 pam_authnft inserts session elements with a 1-day timeout as a safety
-net. Primary cleanup is close_session. Fragments MUST NOT set their
-own elements in session_map_ipv{4,6}/session_map_cg; these sets are
-owned by pam_authnft.
+net. Primary cleanup is close_session (which tears down the per-session
+chain, sets, and jump rule). Fragments MUST NOT insert their own
+elements into per-session sets; these are owned by pam_authnft.
 
-The nft transaction is two separate nft_run_cmd_from_buffer calls:
-call (a) creates the table/sets/chain and inserts the session element;
-call (b) loads the user fragment via `include`. This is NOT atomic:
-if call (a) succeeds and call (b) fails (e.g., a syntax error in the
-fragment), the session element is left in the set with no
-corresponding chain rule. The element has no matching rule to
-reference it and expires after the 1-day timeout. This is the
-expected failure mode — fragment syntax errors are logged via
-pam_syslog and pam_error, and the session is denied with
-PAM_AUTH_ERR. The orphaned element is harmless (it matches nothing
-without a rule) and self-cleans.
+The nft transaction is three separate nft_run_cmd_from_buffer calls.
+If call (c) fails (e.g., a syntax error in the fragment), the
+per-session chain, sets, and jump rule from calls (a) and (b) remain.
+The session is denied with PAM_AUTH_ERR. The orphaned per-session
+state has no matching fragment rules and is reaped at the next session
+close or manually via `nft delete table inet authnft`.
 
 4.6 Composing fragments via nftables `include`
 
@@ -344,17 +354,34 @@ Convention: keep shared fragments under a subdirectory of
 absolute path from the user fragment:
 
     # /etc/authnft/groups/sre-oncall.nft
+    # Included files do NOT receive placeholder substitution.
+    # Use the shared filter chain with accept-only rules.
     add rule inet authnft filter \
-        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \
         ct state new tcp dport { 22, 443, 9090 } accept
 
     # /etc/authnft/users/alice
+    # Top-level fragment uses placeholders for per-session policy.
     include "/etc/authnft/groups/sre-oncall.nft"
-    add rule inet authnft filter \
-        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \
-        ct state new tcp dport 5432 accept
+    add rule inet authnft @session_chain \
+        socket cgroupv2 level 2 . ip saddr @session_v4 \
+        tcp dport 5432 accept
 
-Both files' rules land in `chain inet authnft filter` on open_session.
+The included file's rules land in `chain inet authnft filter`
+(shared); the user fragment's rules land in the per-session chain
+(via @session_chain substitution). Two patterns for composition:
+
+    Per-session policy in the top-level, shared policy in includes.
+    The per-user fragment uses placeholders for its own rules. The
+    included fragment uses the shared filter chain — no placeholders.
+
+    Fully-generated per-user fragments (for automation). A producer
+    generates the full fragment text, inlining any shared rules.
+    Placeholders are substituted at session-open time as normal.
+
+Hand-written fragments that use @session_v4 inside an included file
+will fail to load: libnftables parses the literal token @session_v4
+as a set reference, the set does not exist, and the session is
+denied. This is a detectable failure, not a silent one.
 
 Security considerations:
 
@@ -678,7 +705,7 @@ lifecycle) and the "authnft:" prose (for error conditions).
 
 6.3 Cgroup correlation
 
-The cgroup path embedded in session_map_ipv{4,6}/session_map_cg
+The cgroup path embedded in the per-session sets
 elements is the cgroupv2 scope path from §5. The kernel resolves
 this path to an inode at rule-load time. Correlation:
 

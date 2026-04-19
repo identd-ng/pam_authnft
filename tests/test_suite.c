@@ -150,13 +150,11 @@ static void run_checksec_test(void) {
 }
 
 /* Stage 7: nft_handler_setup fragment load.
- * Post-K1, nft_handler_setup takes a cg_path string that nftables resolves
- * to a cgroupv2 inode at insert time. The unit-test binary cannot create a
- * real authnft.slice scope, so a standalone call with a fabricated path would
- * fail at the kernel level ("cgroupv2 path fails: No such file or directory").
- * End-to-end fragment-load testing lives in integration stage 10.2 and the
- * adversarial 10.11, both of which drive a real pamtester session whose scope
- * exists on the cgroupfs at insert time. This stage is retained as a
+ * Post-Plan-B, nft_handler_setup takes an authnft_session_t* and creates
+ * per-session chains/sets whose cg_path the kernel resolves to a cgroupv2
+ * inode at insert time. The unit-test binary cannot create a real
+ * authnft.slice scope, so end-to-end fragment-load testing lives in
+ * integration stages 10.2 and 10.11. This stage is retained as a
  * placeholder to keep stage numbering stable. */
 static void run_path_resolution_test(void) {
     printf("[STAGE 7] Fragment path resolution and load...\n");
