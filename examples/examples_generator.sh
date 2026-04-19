@@ -51,7 +51,28 @@ show_setup() {
     printf "add rule inet authnft filter ct state established,related accept\n"
     printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept\n"
     printf "EOF\n"
-    printf "sudo chmod 644 %s/%s\n" "$RULES_DIR" "$USER_NAME"
+    printf "sudo chmod 644 %s/%s\n\n" "$RULES_DIR" "$USER_NAME"
+
+    echo "# 5. (Optional) rhost_policy=kernel — derive peer IP from the kernel"
+    echo "#    instead of trusting PAM_RHOST. Catches UseDNS=yes mismatches and"
+    echo "#    load-balancer PROXY-protocol issues."
+    printf "session  optional  pam_authnft.so rhost_policy=kernel\n\n"
+
+    echo "# 6. (Optional) Per-session resource limits via authnft.slice"
+    echo "#    All session scopes inherit from this slice."
+    printf "sudo mkdir -p /etc/systemd/system/authnft.slice.d\n"
+    printf "sudo tee /etc/systemd/system/authnft.slice.d/limits.conf > /dev/null <<'EOF'\n"
+    printf "[Slice]\n"
+    printf "MemoryMax=512M\n"
+    printf "CPUQuota=50%%\n"
+    printf "TasksMax=64\n"
+    printf "EOF\n"
+    printf "sudo systemctl daemon-reload\n\n"
+
+    echo "# 7. (Optional) Shared group fragments directory"
+    printf "sudo mkdir -p /etc/authnft/groups\n"
+    printf "sudo chmod 700 /etc/authnft/groups\n"
+    printf "sudo chown root:root /etc/authnft/groups\n"
     echo "$HR"
 }
 
@@ -96,39 +117,111 @@ show_firewall() {
     echo "#   normally."
     echo ""
 
-    echo "$HR"
-    echo ">> EXAMPLE 1: ACCEPT SESSION TRAFFIC <<"
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo "# INBOUND (INPUT hook — session_map_ipv4 / session_map_ipv6)"
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo ""
+
+    printf "# --- Accept all session traffic ---\n"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
     printf "add rule inet authnft filter ct state established,related accept\n"
     printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept\n"
     printf "add rule inet authnft filter socket cgroupv2 level 2 . ip6 saddr @session_map_ipv6 accept\n\n"
 
-    echo "$HR"
-    echo ">> EXAMPLE 2: RESTRICT TO SPECIFIC PORTS <<"
+    printf "# --- Restrict to specific ports ---\n"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
     printf "add rule inet authnft filter ct state established,related accept\n"
     printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 tcp dport { 80, 443 } accept\n\n"
 
-    echo "$HR"
-    echo ">> EXAMPLE 3: LOG AND ACCEPT <<"
+    printf "# --- Log and accept ---\n"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
     printf "add rule inet authnft filter ct state established,related accept\n"
     printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 log prefix \"authnft_%s: \" accept\n\n" "$USER_NAME"
 
-    echo "$HR"
-    echo ">> EXAMPLE 4: NAT MASQUERADE <<"
+    printf "# --- Time-restricted access ---\n"
+    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "add rule inet authnft filter ct state established,related accept\n"
+    echo 'add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \'
+    printf '    meta day { "Mon","Tue","Wed","Thu","Fri" } hour "09:00"-"17:00" accept\n\n'
+
+    printf "# --- Per-session rate limiting ---\n"
+    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "# Accept up to 100 pps from this session; drop excess with a counter.\n"
+    printf "add rule inet authnft filter ct state established,related accept\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    limit rate 100/second burst 50 packets accept\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    counter drop comment \"%s-rate-exceeded\"\n\n" "$USER_NAME"
+
+    printf "# --- Deny-by-default lockdown (zero-trust bastion) ---\n"
+    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "# Whitelist specific ports; drop everything else from this session.\n"
+    printf "add rule inet authnft filter ct state established,related accept\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    tcp dport { 22, 443, 9090 } accept\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    counter drop comment \"%s-deny-default\"\n\n" "$USER_NAME"
+
+    printf "# --- Per-session traffic accounting ---\n"
+    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "# Named counter visible via: nft list counters table inet authnft\n"
+    printf "add counter inet authnft %s_bytes\n" "$USER_NAME"
+    printf "add rule inet authnft filter ct state established,related accept\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    counter name %s_bytes accept\n\n" "$USER_NAME"
+
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo "# OUTBOUND (OUTPUT hook — session_map_cg, cgroup-only)"
+    echo "#"
+    echo "# On the output path, the cgroup is the sending socket's and"
+    echo "# ip daddr is the destination. Use session_map_cg (no src_ip leg)"
+    echo "# because ip saddr on output is the host's own address."
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo ""
+
+    printf "# --- Destination pinning (bastion host) ---\n"
+    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "# Session processes can only reach the database tier.\n"
+    printf "add chain inet authnft %s_egress { type filter hook output priority filter - 1; }\n" "$USER_NAME"
+    printf "add rule inet authnft %s_egress ct state established,related accept\n" "$USER_NAME"
+    printf "add rule inet authnft %s_egress socket cgroupv2 level 2 @session_map_cg ip daddr 10.0.5.0/24 accept\n" "$USER_NAME"
+    printf "add rule inet authnft %s_egress socket cgroupv2 level 2 @session_map_cg counter drop comment \"%s-egress-deny\"\n\n" "$USER_NAME" "$USER_NAME"
+
+    printf "# --- DNS resolver pinning ---\n"
+    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    printf "# Session processes can only query approved DNS resolvers.\n"
+    printf "add chain inet authnft %s_dns { type filter hook output priority filter - 1; }\n" "$USER_NAME"
+    printf "add rule inet authnft %s_dns socket cgroupv2 level 2 @session_map_cg \\\\\n" "$USER_NAME"
+    printf "    meta l4proto { tcp, udp } th dport 53 ip daddr { 10.0.0.53, 10.0.0.54 } accept\n"
+    printf "add rule inet authnft %s_dns socket cgroupv2 level 2 @session_map_cg \\\\\n" "$USER_NAME"
+    printf "    meta l4proto { tcp, udp } th dport 53 counter drop comment \"%s-dns-pinned\"\n\n" "$USER_NAME"
+
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo "# NAT (POSTROUTING hook — session_map_cg, cgroup-only)"
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo ""
+
+    printf "# --- Session masquerade ---\n"
     printf "# /etc/authnft/users/%s\n" "$USER_NAME"
     printf "# In postrouting, ip saddr is the server's own IP — not the client's.\n"
     printf "# Use session_map_cg (cgroup-only) to match outbound traffic from this session.\n"
     printf "add chain inet authnft %s_nat { type nat hook postrouting priority srcnat; }\n" "$USER_NAME"
     printf "add rule inet authnft %s_nat socket cgroupv2 level 2 @session_map_cg masquerade\n\n" "$USER_NAME"
 
-    echo "$HR"
-    echo ">> EXAMPLE 5: TIME-RESTRICTED ACCESS <<"
-    printf "# /etc/authnft/users/%s\n" "$USER_NAME"
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo "# COMPOSITION (include directive)"
+    echo "# ═══════════════════════════════════════════════════════════════════"
+    echo ""
+
+    printf "# --- Group base + per-user override ---\n"
+    printf "# /etc/authnft/groups/sre-base.nft  (shared, root-owned)\n"
     printf "add rule inet authnft filter ct state established,related accept\n"
-    echo 'add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \'
-    echo '    meta day { "Mon","Tue","Wed","Thu","Fri" } hour "09:00"-"17:00" accept'
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    tcp dport { 22, 443, 9090 } accept\n\n"
+    printf "# /etc/authnft/users/%s  (includes shared base, adds postgres)\n" "$USER_NAME"
+    printf "include \"/etc/authnft/groups/sre-base.nft\"\n"
+    printf "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 \\\\\n"
+    printf "    tcp dport 5432 accept comment \"%s-postgres\"\n" "$USER_NAME"
     echo "$HR"
 }
 
@@ -137,24 +230,48 @@ show_monitor() {
     echo "$HR"
 
     echo "# Current session elements (who is connected, from where)"
-    printf "sudo nft list set inet authnft session_map_ipv4\n\n"
+    printf "sudo nft list set inet authnft session_map_ipv4\n"
+    printf "sudo nft list set inet authnft session_map_ipv6\n"
+    printf "sudo nft list set inet authnft session_map_cg\n\n"
+
+    echo "# Full table state (sets + chains + rules + counters)"
+    printf "sudo nft list table inet authnft\n\n"
 
     echo "# Session JSON files (one per active session)"
     printf "ls -la /run/authnft/sessions/\n"
     printf "cat /run/authnft/sessions/*.json 2>/dev/null | python3 -m json.tool\n\n"
 
-    echo "# Module log output (open/close events with correlation tokens)"
+    echo "# Structured audit events (open/close with correlation tokens)"
     printf "journalctl -t pam_authnft --since '1 hour ago' --no-pager\n\n"
 
-    echo "# Correlate open+close events for a session"
-    printf "journalctl -t pam_authnft AUTHNFT_EVENT=open --output=json --no-pager | head -1\n\n"
+    echo "# JSON export for SIEM — filter open events, extract fields"
+    printf "journalctl -t pam_authnft AUTHNFT_EVENT=open --output=json --no-pager\n\n"
 
-    echo "# Live nftables events"
-    printf "sudo nft monitor\n\n"
+    echo "# Join open+close events by correlation token"
+    printf "journalctl -t pam_authnft AUTHNFT_CORRELATION=authnft-<token> --no-pager\n\n"
 
     echo "# Active session scopes and cgroup resource usage"
     printf "systemctl list-units 'authnft-*.scope' --no-pager\n"
-    printf "systemd-cgtop --depth=2 /authnft.slice\n"
+    printf "systemd-cgtop --depth=2 /authnft.slice\n\n"
+
+    echo "# Per-session processes (replace with actual scope name)"
+    printf "cat /sys/fs/cgroup/authnft.slice/authnft-%s-<pid>.scope/cgroup.procs\n\n" "$USER_NAME"
+
+    echo "# Per-session named counter values (if fragments use named counters)"
+    printf "sudo nft list counters table inet authnft\n\n"
+
+    echo "# Verify cgroup match is firing (check packet counters on rules)"
+    printf "sudo nft list chain inet authnft filter\n\n"
+
+    echo "# Reset counters (useful before a test probe)"
+    printf "sudo nft reset counters table inet authnft\n\n"
+
+    echo "# Live nftables events (element insertions/deletions in real time)"
+    printf "sudo nft monitor\n\n"
+
+    echo "# Trace packet classification through authnft rules"
+    printf "sudo nft add rule inet authnft filter meta nftrace set 1\n"
+    printf "sudo nft monitor trace\n"
     echo "$HR"
 }
 
