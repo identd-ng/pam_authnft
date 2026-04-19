@@ -223,7 +223,7 @@ void event_close_emit(pam_handle_t *pamh, const authnft_session_t *sd,
  * Accepts IPv4, IPv6, and IPv6 link-local with a zone suffix ("%zone");
  * the zone is stripped because nftables ip6 saddr matches do not accept it.
  * IPv6 v4-mapped addresses (::ffff:a.b.c.d) are extracted to plain IPv4
- * so the element lands in session_map_ipv4, not session_map_ipv6.
+ * so the element lands in the per-session IPv4 set, not the IPv6 set.
  * Returns 1 on success, 0 on any rejection (NULL, empty, hostname, overlong,
  * malformed literal).
  */

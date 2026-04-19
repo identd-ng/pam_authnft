@@ -27,7 +27,7 @@ Near-term
     short fuzz runs.
 [ ] Integration test for IPv6 path — every integration stage currently
     uses rhost=127.0.0.1. Add an IPv6-rhost variant of 10.2 / 10.6
-    targeting session_map_ipv6.
+    targeting the per-session IPv6 set.
 [ ] Periodically re-run `make trace` on kernel / glibc upgrades to
     catch syscall drift (standing item, not a one-time task).
 

@@ -106,7 +106,7 @@ case "$WORKFLOW" in
         getent group authnft >/dev/null || groupadd authnft
         getent passwd authnft-test >/dev/null \
           || useradd -r -s /usr/sbin/nologin -G authnft authnft-test
-        echo "add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept" \
+        echo 'add rule inet authnft @session_chain socket cgroupv2 level 2 . ip saddr @session_v4 accept' \
           > /etc/authnft/users/authnft-test
         chown root:root /etc/authnft/users/authnft-test
         chmod 644 /etc/authnft/users/authnft-test

@@ -70,20 +70,22 @@ Invariants to preserve
    PAM_AUTH_ERR via `pam_error()`. This is the trust boundary — treat
    changes as security changes.
 
-6. The nft transaction is two libnftables calls:
-       (a) add table/sets/chain/element
-       (b) include "<fragment>"
-   libnftables does not support `include` inside declarative blocks.
+6. The nft transaction is three libnftables calls:
+       (a) add table + shared filter chain + ct state rule +
+           per-session chain + 3 per-session sets + element
+       (b) add jump rule with ECHO|HANDLE for handle capture
+       (c) read fragment, substitute placeholders, execute
    The element is inserted before the fragment so fragment rules can
-   reference `@session_map_ipv{4,6}`.
+   reference the per-session sets via placeholders.
 
-7. Three named sets live in `table inet authnft`:
-       session_map_ipv4   typeof socket cgroupv2 level 2 . ip saddr;  flags timeout
-       session_map_ipv6   typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout
-       session_map_cg     typeof socket cgroupv2 level 2;             flags timeout
+7. Each session creates three per-session sets:
+       session_<user>_<pid>_v4   typeof socket cgroupv2 level 2 . ip saddr;  flags timeout
+       session_<user>_<pid>_v6   typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout
+       session_<user>_<pid>_cg   typeof socket cgroupv2 level 2;             flags timeout
    A session element goes into exactly one of these, selected by
-   PAM_RHOST normalization and the configured rhost_policy. The 24-hour
-   element timeout is a safety net, not a primary cleanup mechanism.
+   PAM_RHOST normalization and the configured rhost_policy. A jump
+   rule in the shared filter chain dispatches to the per-session
+   chain `session_<user>_<pid>`. Cleanup deletes by handle.
 
 8. Chain priority is `filter - 1` so pam_authnft runs before the default
    filter chain.
@@ -93,12 +95,11 @@ Concurrency
 -----------
 
 Multiple pam_authnft invocations can run in parallel (e.g., simultaneous
-sshd sessions). The `add table`, `add set`, and `add chain` statements
-emitted by every invocation are byte-identical, so libnftables accepts
-them idempotently regardless of interleaving. Session elements carry
-distinct `cg_path` keys and do not collide. The `add element` path relies
-on nftables' own atomicity for a single-set insert; there is no
-cross-session critical section in module code.
+sshd sessions). The `add table` and shared `add chain filter` statements
+are byte-identical and idempotent. Per-session chains and sets carry
+unique names (session_<user>_<pid>_*) and do not collide across
+sessions. Each session's jump rule and fragment rules are isolated in
+the per-session chain; there is no cross-session critical section.
 
 Fragments may use nftables `include` directives (integration test 10.8
 covers transitive resolution). Invariant #5's ownership check is
@@ -212,7 +213,7 @@ incident.
                            no automated guard (libnftables semantics
                            are version-dependent)
   #3 element-before-frag   covered by integration 10.2 succeeding with
-                           a fragment that references @session_map_ipv4
+                           a fragment that references @session_v4
   #4 fragment perms        integration 10.4 (uid != 0) + 10.5
                            (world-writable) must both be rejected
   #5 seccomp provenance    `make trace` produces a syscall summary;

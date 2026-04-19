@@ -39,14 +39,14 @@ matters most:
   pin allowed destinations, or enable masquerade only for that session.
   Filtering applies to sockets the user opens inside their session
   (listeners, outbound connections); the SSH control connection itself
-  is handled by the standard `ct state established,related accept` rule
-  that precedes the session match. See
+  is handled by the `ct state established,related accept` rule the module
+  adds to the shared filter chain ahead of session jumps. See
   [docs/ARCHITECTURE.txt](docs/ARCHITECTURE.txt) for the full trust model.
 - **VPN concentrators** (WireGuard, OpenConnect, strongSwan) — per-tunnel
   packet filtering tied to the VPN's PAM authentication, not a static
   ruleset that applies to all tunnels.
 - **Bastion / jump hosts** — auditable per-session network access. Each
-  session element is visible in `nft list set inet authnft session_map_ipv4`
+  session element is visible in `nft list table inet authnft`
   with username, PID, and optional claims tag, plus a shared correlation
   token in the systemd journal for SIEM join.
 - **RADIUS / TACACS+ and OIDC deployments** — the `claims_env` mechanism
@@ -86,18 +86,16 @@ On session open:
    default).
 3. Creates a named transient `.scope` under `authnft.slice` via D-Bus.
 4. Constructs the scope's cgroupv2 path (`authnft.slice/<scope>.scope`) and
-   stores it in PAM data alongside the normalised source IP and a
-   correlation token.
-5. Validates and loads the user's root-owned fragment at
-   `/etc/authnft/users/<username>`.
-6. Inserts a session element into one of three named sets:
-   - `session_map_ipv4` — `{ cgroup_path . src_ip }` when PAM_RHOST parses
-     as IPv4, or as a v4-mapped v6 address extracted to plain IPv4
-     (common when sshd listens on `::` with `IPV6_V6ONLY=0`)
-   - `session_map_ipv6` — `{ cgroup_path . src_ip }` when PAM_RHOST parses
-     as pure IPv6
-   - `session_map_cg`   — `{ cgroup_path }` only, when PAM_RHOST was absent
-     or could not be normalised (default `rhost_policy=lax` behaviour)
+   stores it in PAM data alongside per-session chain/set names, the
+   normalised source IP, and a correlation token.
+5. Creates a per-session chain (`session_<user>_<pid>`) and three
+   per-session sets (`_v4`, `_v6`, `_cg`). Inserts a session element
+   into one set based on the resolved IP family. Adds a jump rule in the
+   shared `filter` chain.
+6. Validates and loads the user's root-owned fragment at
+   `/etc/authnft/users/<username>`, substituting four placeholders
+   (`@session_v4`, `@session_v6`, `@session_cg`, `@session_chain`)
+   with the live per-session names.
 7. Writes `/run/authnft/sessions/<scope_unit>.json` (0644 root:root) so
    unprivileged observers can correlate the cgroup back to the owning
    session — see [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §5.6.
@@ -105,11 +103,12 @@ On session open:
    correlation token — see [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt)
    §6.2.
 
-On logout the stored cgroup path is retrieved from PAM data, the element is
-deleted from the exact set it was inserted into, the session-identity JSON
-is unlinked, and a matching `AUTHNFT_EVENT=close` journal entry is emitted
-with the same correlation token. The nftables table and sets persist across
-sessions.
+On logout the stored session state is retrieved from PAM data: the jump rule
+is deleted by handle, the per-session chain is flushed and deleted, and the
+three per-session sets are deleted in a single transaction. The
+session-identity JSON is unlinked and a matching `AUTHNFT_EVENT=close`
+journal entry is emitted with the same correlation token. The shared
+`filter` chain and `authnft` table persist across sessions.
 
 For the full lifecycle, trust model, and seccomp details, see
 [docs/ARCHITECTURE.txt](docs/ARCHITECTURE.txt).
@@ -123,7 +122,7 @@ each one with MUST/SHOULD requirements and versioning guarantees.
 | Interface | What it is | Who cares |
 |---|---|---|
 | **PAM** | Exactly two exported symbols: `pam_sm_open_session`, `pam_sm_close_session`. Reads `PAM_USER`, `PAM_RHOST`, and optionally two env vars (`claims_env=NAME`, `AUTHNFT_CORRELATION`). | PAM module authors, distro packagers |
-| **nftables sets** | Three named sets in `table inet authnft` (`session_map_ipv4`, `session_map_ipv6`, `session_map_cg`), inspectable via `nft list`. | Firewall tooling, policy engines |
+| **nftables sets** | Three per-session sets per active session (`session_<user>_<pid>_{v4,v6,cg}`) under `table inet authnft`, inspectable via `nft list`. | Firewall tooling, policy engines |
 | **Per-user fragments** | Plain nftables syntax at `/etc/authnft/users/<user>`. May use `include` to compose shared group-level rules (§4.6). | Config management (Ansible/Salt/Puppet), identity brokers |
 | **systemd** | Transient `.scope` units under `authnft.slice`. Discoverable via `systemctl list-units 'authnft-*.scope'`. All `systemd.resource-control(5)` directives available. | Orchestrators, resource-accounting tools |
 | **claims_env** | Optional keyring-payload channel: an upstream PAM module writes a tag via `add_key(2)` + `pam_putenv(3)`; pam_authnft reads, sanitizes, and embeds it in the nftables element comment. | AAA/audit integrations, identity brokers |
@@ -169,8 +168,7 @@ sudo usermod -aG authnft alice
 
 # Create a root-owned fragment for that user
 sudo tee /etc/authnft/users/alice > /dev/null <<'EOF'
-add rule inet authnft filter ct state established,related accept
-add rule inet authnft filter socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept
+add rule inet authnft @session_chain socket cgroupv2 level 2 . ip saddr @session_v4 accept
 EOF
 sudo chmod 644 /etc/authnft/users/alice
 ```
@@ -192,7 +190,7 @@ time-limited fragment variants.
 
 | Argument | Default | Effect |
 |---|---|---|
-| `rhost_policy=lax` | ✓ | Use PAM_RHOST if it parses as an IP, else fall back to `session_map_cg` |
+| `rhost_policy=lax` | ✓ | Use PAM_RHOST if it parses as an IP, else fall back to cgroup-only set |
 | `rhost_policy=strict` |  | Deny session when PAM_RHOST is not a parseable IP literal (pre-0.2 behaviour) |
 | `rhost_policy=kernel` |  | Derive peer IP from the session process's own ESTABLISHED TCP socket via `NETLINK_SOCK_DIAG` (see `ss(8)`). Logs a warning on divergence with PAM_RHOST. Falls through to `lax` on lookup failure |
 | `claims_env=NAME` |  | Read PAM env var `NAME` for a kernel-keyring serial; embed the sanitized keyed payload in the nftables element comment. See [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §2 |
@@ -234,25 +232,30 @@ pattern, security notes, and cycle-detection guidance.
 ```
 # nft list table inet authnft
 table inet authnft {
-    set session_map_ipv4 {
+    set session_alice_1127936_v4 {
         typeof socket cgroupv2 level 0 . ip saddr
         flags timeout
         elements = { "authnft.slice/authnft-alice-1127936.scope" . 192.0.2.1 timeout 1d expires 23h55m56s comment "alice (PID:1127936)" }
     }
 
-    set session_map_ipv6 {
+    set session_alice_1127936_v6 {
         typeof socket cgroupv2 level 0 . ip6 saddr
         flags timeout
     }
 
-    set session_map_cg {
+    set session_alice_1127936_cg {
         typeof socket cgroupv2 level 0
         flags timeout
     }
 
     chain filter {
         type filter hook input priority filter - 1; policy accept;
-        socket cgroupv2 level 2 . ip saddr @session_map_ipv4 accept
+        ct state established,related accept
+        jump session_alice_1127936
+    }
+
+    chain session_alice_1127936 {
+        socket cgroupv2 level 2 . ip saddr @session_alice_1127936_v4 accept
     }
 }
 ```
@@ -364,13 +367,14 @@ automatically. Set `AUTHNFT_TEST_USER` to override the test account name
 | 10.3 | Integration: root bypasses the module entirely |
 | 10.4 | Integration: fragment rejected when not root-owned |
 | 10.5 | Integration: fragment rejected when world-writable |
-| 10.6 | Integration: nft element cleaned up at close via persisted session data |
+| 10.6 | Integration: per-session chain/sets cleaned up at close via persisted session data |
 | 10.7 | Integration: close_session best-effort when no prior open state |
 | 10.8 | Integration: multi-fragment composition via nftables `include` |
 | 10.9 | Integration: `/run/authnft/sessions/` JSON file lifecycle + schema + perms |
 | 10.10 | Integration: `AUTHNFT_EVENT=open/close` emitted with shared correlation token |
 | 10.11 | Integration: adversarial packet classification — cgroup match fires on allowed source, does not fire on disallowed source |
 | 10.12 | Integration: Class A/B socket-scope invariant — pre-scope socket does not match after task migration |
+| 10.13 | Integration: cross-session isolation — user A's deny rule does not affect user B's traffic (per-session set boundary) |
 | — | Integration: no memory errors or leaks under Valgrind memcheck |
 
 ### CI matrix
@@ -394,8 +398,8 @@ default with `PR_SET_NO_NEW_PRIVS`; see
   at `open_session`. The `socket cgroupv2` match applies to sockets created
   inside the session scope; sockets that existed before the scope was
   created (e.g., the SSH control connection) carry their original cgroup
-  and are not matched. Fragments should include `ct state established,
-  related accept` ahead of the session match to handle pre-scope traffic.
+  and are not matched. The module adds `ct state established,related
+  accept` to the shared `filter` chain to handle pre-scope traffic.
 - Transitively included fragments are NOT validated by pam_authnft for
   ownership or mode. The admin must ensure every included file is
   root-owned and not world-writable.

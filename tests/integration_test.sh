@@ -305,7 +305,7 @@ pass "Audit events: open + close emitted, shared correlation='$CORR_OPEN'"
 
 # 10.11: Adversarial packet classification (ingress).
 #
-# Verifies that `socket cgroupv2 level 2 . ip saddr @session_map_ipv4`
+# Verifies that `socket cgroupv2 level 2 . ip saddr @<per-session set>`
 # on the INPUT-hooked chain actually accepts packets from allowed
 # sources and drops packets from disallowed sources. This is the test
 # that would have caught the K1 bug: every prior stage verified positive

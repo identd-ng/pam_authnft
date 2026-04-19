@@ -64,7 +64,7 @@ int util_normalize_ip(const char *in, char *out, size_t out_sz) {
 
     if (inet_pton(AF_INET6, core, addr_buf) == 1) {
         /* v4-mapped v6 (::ffff:a.b.c.d) → extract as plain IPv4 so the
-         * element lands in session_map_ipv4 rather than session_map_ipv6.
+         * element lands in the per-session IPv4 set rather than the IPv6 set.
          * Common when sshd listens on :: with IPV6_V6ONLY=0. */
         const struct in6_addr *a6 = (const struct in6_addr *)addr_buf;
         if (IN6_IS_ADDR_V4MAPPED(a6)) {
