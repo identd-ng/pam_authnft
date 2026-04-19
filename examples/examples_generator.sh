@@ -5,12 +5,15 @@
 # Generates example nftables fragments and setup commands for pam_authnft.
 # Usage: examples_generator.sh [-s|-f|-m|-h]
 
-USER_NAME="alice"
+USER_NAME="$(id -un)"
 RULES_DIR="/etc/authnft/users"
 HR="--------------------------------------------------------------------------------"
 
 show_help() {
     echo "Usage: $(basename "$0") [username] [OPTION]"
+    echo ""
+    echo "Generates examples for the current user. Pass a username as the"
+    echo "first argument to generate for a different user."
     echo ""
     echo "Options:"
     echo "  -s, --setup     Filesystem layout and PAM configuration."
@@ -31,7 +34,6 @@ show_setup() {
     printf "sudo chown root:root %s\n\n" "$RULES_DIR"
 
     echo "# 3. PAM — add to /etc/pam.d/sshd (after pam_systemd.so)"
-    echo "#"
     echo "# Option A: module checks group membership internally."
     echo "# Non-members pass through; members without a fragment are denied."
     printf "session  optional  pam_authnft.so\n\n"
