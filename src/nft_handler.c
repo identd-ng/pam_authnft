@@ -138,7 +138,8 @@ static char *substitute_placeholders(const char *src, size_t src_len,
     int in_comment = 0;
     int in_quote = 0;
 
-    for (size_t i = 0; i < src_len; i++) {
+    size_t i = 0;
+    while (i < src_len) {
         char c = src[i];
 
         if (c == '\n') { in_comment = 0; }
@@ -147,6 +148,7 @@ static char *substitute_placeholders(const char *src, size_t src_len,
 
         if (in_comment || in_quote) {
             out[wi++] = c;
+            i++;
             continue;
         }
 
@@ -171,13 +173,14 @@ static char *substitute_placeholders(const char *src, size_t src_len,
                 }
                 memcpy(&out[wi], replacements[p], rlen);
                 wi += rlen;
-                i += plen - 1; /* -1 because loop increments */
+                i += plen;
                 matched = 1;
                 break;
             }
         }
         if (!matched) {
             out[wi++] = c;
+            i++;
         }
     }
     out[wi] = '\0';
