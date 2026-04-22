@@ -1,0 +1,37 @@
+name: CIFuzz
+on:
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  Fuzzing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # OSS-Fuzz project files live in infra/oss-fuzz/ (Dockerfile + build.sh).
+      # Once the project is accepted into OSS-Fuzz, add:
+      #   oss-fuzz-project-name: 'pam_authnft'
+      - name: Build fuzzers
+        uses: google/clusterfuzz-buildbot/actions/build_fuzzers@v1
+        with:
+          language: c
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 600
+
+      - name: Run fuzzers
+        uses: google/clusterfuzz-buildbot/actions/run_fuzzers@v1
+        with:
+          language: c
+          fuzz-seconds: 600
+          mode: ci
+
+      - name: Upload crash artifacts
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: cifuzz-artifacts
+          path: ./out/artifacts

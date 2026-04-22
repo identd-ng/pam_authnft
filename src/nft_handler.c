@@ -21,7 +21,10 @@
  *
  * Returns 0 if valid, -1 if rejected (reason logged via pam_syslog).
  */
-static int validate_fragment_content(pam_handle_t *pamh, const char *path) {
+#ifndef FUZZ_BUILD
+static
+#endif
+int validate_fragment_content(pam_handle_t *pamh, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
 
