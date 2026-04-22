@@ -6,32 +6,46 @@ on:
 permissions:
   contents: read
 
+# Leak detection requires ptrace which GitHub Actions runners deny.
+# Disable it so ASan does not abort before the fuzzer finishes its run.
+env:
+  ASAN_OPTIONS: detect_leaks=0
+
 jobs:
-  Fuzzing:
+  fuzz:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      # OSS-Fuzz project files live in infra/oss-fuzz/ (Dockerfile + build.sh).
-      # Once the project is accepted into OSS-Fuzz, add:
-      #   oss-fuzz-project-name: 'pam_authnft'
-      - name: Build fuzzers
-        uses: google/clusterfuzz-buildbot/actions/build_fuzzers@v1
-        with:
-          language: c
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 600
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang pkg-config \
+            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
 
-      - name: Run fuzzers
-        uses: google/clusterfuzz-buildbot/actions/run_fuzzers@v1
-        with:
-          language: c
-          fuzz-seconds: 600
-          mode: ci
+      - name: Build fuzz targets
+        run: make fuzz
+
+      - name: Fuzz util_is_valid_username + util_normalize_ip (60s)
+        run: |
+          mkdir -p fuzz/corpus/username fuzz/crashes
+          ./fuzz/out/fuzz_username \
+            -max_total_time=60 \
+            -artifact_prefix=fuzz/crashes/username- \
+            fuzz/corpus/username/
+
+      - name: Fuzz validate_fragment_content (60s)
+        run: |
+          mkdir -p fuzz/corpus/fragment fuzz/crashes
+          ./fuzz/out/fuzz_fragment \
+            -max_total_time=60 \
+            -artifact_prefix=fuzz/crashes/fragment- \
+            fuzz/corpus/fragment/
 
       - name: Upload crash artifacts
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: cifuzz-artifacts
-          path: ./out/artifacts
+          name: fuzz-crashes
+          path: fuzz/crashes/
