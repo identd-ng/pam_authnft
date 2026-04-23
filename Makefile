@@ -194,8 +194,46 @@ install-man: man/pam_authnft.8
 	sudo install -m 644 man/pam_authnft.8 $(MAN_DIR)/pam_authnft.8
 	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
+# Fuzz targets — requires clang + compiler-rt (libFuzzer).
+# Builds fuzz_username and fuzz_fragment with ASan + libFuzzer into fuzz/out/.
+# Run a target directly to start fuzzing, optionally with a corpus directory:
+#   ./fuzz/out/fuzz_username fuzz/corpus/username/
+#   ./fuzz/out/fuzz_fragment fuzz/corpus/fragment/
+FUZZ_CC  = clang
+FUZZ_OUT = fuzz/out
+FUZZ_COMMON = -g -O1 -Iinclude -D_GNU_SOURCE -DFUZZ_BUILD \
+              -fsanitize=address -fno-omit-frame-pointer
+
+FUZZ_SRC_OBJS = $(patsubst src/%.c,$(FUZZ_OUT)/obj/%.o,$(wildcard src/*.c))
+
+$(FUZZ_OUT)/obj/%.o: src/%.c
+	@mkdir -p $(FUZZ_OUT)/obj
+	$(FUZZ_CC) $(FUZZ_COMMON) -fsanitize=fuzzer-no-link \
+	    `$(PKG_CONFIG) --cflags $(LIBS)` -c $< -o $@
+
+$(FUZZ_OUT)/fuzz_username: fuzz/fuzz_username.c $(FUZZ_SRC_OBJS)
+	@mkdir -p $(FUZZ_OUT)
+	$(FUZZ_CC) $(FUZZ_COMMON) -fsanitize=fuzzer \
+	    `$(PKG_CONFIG) --cflags $(LIBS)` \
+	    fuzz/fuzz_username.c $(FUZZ_SRC_OBJS) \
+	    `$(PKG_CONFIG) --libs $(LIBS)` \
+	    -o $@
+
+$(FUZZ_OUT)/fuzz_fragment: fuzz/fuzz_fragment.c $(FUZZ_SRC_OBJS)
+	@mkdir -p $(FUZZ_OUT)
+	$(FUZZ_CC) $(FUZZ_COMMON) -fsanitize=fuzzer \
+	    `$(PKG_CONFIG) --cflags $(LIBS)` \
+	    fuzz/fuzz_fragment.c $(FUZZ_SRC_OBJS) \
+	    `$(PKG_CONFIG) --libs $(LIBS)` \
+	    -o $@
+
+fuzz: $(FUZZ_OUT)/fuzz_username $(FUZZ_OUT)/fuzz_fragment
+	@echo "Fuzz targets ready in $(FUZZ_OUT)/"
+	@echo "  ./$(FUZZ_OUT)/fuzz_username [fuzz/corpus/username/]"
+	@echo "  ./$(FUZZ_OUT)/fuzz_fragment [fuzz/corpus/fragment/]"
+
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -203,6 +241,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean test test-symbols test-integration test-container \
+.PHONY: all debug clean fuzz test test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
         distclean install install-tmpfiles uninstall man install-man

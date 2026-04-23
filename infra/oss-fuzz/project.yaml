@@ -1,0 +1,10 @@
+homepage: "https://github.com/identd-ng/pam_authnft"
+language: c
+primary_contact: "avinashhd@protonmail.com"
+auto_ccs:
+  - "avinashhd@protonmail.com"
+fuzzing_engines:
+  - libfuzzer
+sanitizers:
+  - address
+  - undefined
