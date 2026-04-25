@@ -41,3 +41,12 @@ $CC $CFLAGS $COMMON $PKGCF \
     fuzz/fuzz_fragment.c "$WORK"/obj/*.o \
     $LIB_FUZZING_ENGINE $PKGLD \
     -o "$OUT/fuzz_fragment"
+
+# fuzz_substitute_placeholders: exercises substitute_placeholders, the
+# token-aware @session_* expander with comment/quote state machine and
+# malloc(src_len*2+1) sizing budget. Carries a property assertion on
+# the output-length invariant (see fuzz/fuzz_substitute_placeholders.c).
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_substitute_placeholders.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_substitute_placeholders"

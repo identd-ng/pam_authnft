@@ -195,14 +195,19 @@ install-man: man/pam_authnft.8
 	sudo gzip -f $(MAN_DIR)/pam_authnft.8
 
 # Fuzz targets — requires clang + compiler-rt (libFuzzer).
-# Builds fuzz_username and fuzz_fragment with ASan + libFuzzer into fuzz/out/.
-# Run a target directly to start fuzzing, optionally with a corpus directory:
-#   ./fuzz/out/fuzz_username fuzz/corpus/username/
-#   ./fuzz/out/fuzz_fragment fuzz/corpus/fragment/
+# Builds harnesses with ASan + libFuzzer into fuzz/out/. Run a target
+# directly to start fuzzing, optionally with a corpus directory.
+# Surface and status: docs/FUZZ_SURFACE.md.
 FUZZ_CC  = clang
 FUZZ_OUT = fuzz/out
 FUZZ_COMMON = -g -O1 -Iinclude -D_GNU_SOURCE -DFUZZ_BUILD \
               -fsanitize=address -fno-omit-frame-pointer
+
+# Harness source files live at fuzz/fuzz_<name>.c. To add a new harness,
+# drop the source in fuzz/ and append the binary path here.
+FUZZ_TARGETS = $(FUZZ_OUT)/fuzz_username \
+               $(FUZZ_OUT)/fuzz_fragment \
+               $(FUZZ_OUT)/fuzz_substitute_placeholders
 
 FUZZ_SRC_OBJS = $(patsubst src/%.c,$(FUZZ_OUT)/obj/%.o,$(wildcard src/*.c))
 
@@ -211,29 +216,110 @@ $(FUZZ_OUT)/obj/%.o: src/%.c
 	$(FUZZ_CC) $(FUZZ_COMMON) -fsanitize=fuzzer-no-link \
 	    `$(PKG_CONFIG) --cflags $(LIBS)` -c $< -o $@
 
-$(FUZZ_OUT)/fuzz_username: fuzz/fuzz_username.c $(FUZZ_SRC_OBJS)
+$(FUZZ_OUT)/fuzz_%: fuzz/fuzz_%.c $(FUZZ_SRC_OBJS)
 	@mkdir -p $(FUZZ_OUT)
 	$(FUZZ_CC) $(FUZZ_COMMON) -fsanitize=fuzzer \
 	    `$(PKG_CONFIG) --cflags $(LIBS)` \
-	    fuzz/fuzz_username.c $(FUZZ_SRC_OBJS) \
+	    $< $(FUZZ_SRC_OBJS) \
 	    `$(PKG_CONFIG) --libs $(LIBS)` \
 	    -o $@
 
-$(FUZZ_OUT)/fuzz_fragment: fuzz/fuzz_fragment.c $(FUZZ_SRC_OBJS)
-	@mkdir -p $(FUZZ_OUT)
-	$(FUZZ_CC) $(FUZZ_COMMON) -fsanitize=fuzzer \
-	    `$(PKG_CONFIG) --cflags $(LIBS)` \
-	    fuzz/fuzz_fragment.c $(FUZZ_SRC_OBJS) \
-	    `$(PKG_CONFIG) --libs $(LIBS)` \
-	    -o $@
+fuzz: $(FUZZ_TARGETS)
+	@echo "Fuzz targets ready in $(FUZZ_OUT)/:"
+	@for t in $(FUZZ_TARGETS); do echo "  ./$$t"; done
 
-fuzz: $(FUZZ_OUT)/fuzz_username $(FUZZ_OUT)/fuzz_fragment
-	@echo "Fuzz targets ready in $(FUZZ_OUT)/"
-	@echo "  ./$(FUZZ_OUT)/fuzz_username [fuzz/corpus/username/]"
-	@echo "  ./$(FUZZ_OUT)/fuzz_fragment [fuzz/corpus/fragment/]"
+# Coverage measurement — builds harnesses with -fprofile-instr-generate
+# -fcoverage-mapping (separate from `make fuzz` since coverage flags are
+# load-bearing across the whole link). Runs each harness for ~10s,
+# merges profdata, generates HTML at docs/fuzz-coverage/index.html and
+# a text summary on stdout. The 90% per-harness coverage bar is the
+# threshold for promoting a row in docs/FUZZ_SURFACE.md from 🟡 to ✅.
+#
+# Build artefacts (objects, harness binaries, .profraw, .profdata) live
+# under FUZZ_COV_OUT and ARE wiped by `make clean`. The HTML report under
+# FUZZ_COV_HTML is preserved across `make clean` so it can be browsed
+# without rebuilding.
+FUZZ_COV_OUT  = fuzz/coverage
+FUZZ_COV_HTML = docs/fuzz-coverage
+# -ffile-prefix-map keeps absolute paths to the source tree out of the
+# debug info / coverage mapping, so the generated HTML filenames are
+# repo-relative (e.g. src/foo.c.html) instead of leaking the developer's
+# home directory.
+FUZZ_COV_CFLAGS = $(FUZZ_COMMON) -fprofile-instr-generate -fcoverage-mapping \
+                  -fcoverage-prefix-map=$(CURDIR)/=
 
+fuzz-coverage:
+	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata required"; exit 1; }
+	@command -v llvm-cov      >/dev/null 2>&1 || { echo "llvm-cov required"; exit 1; }
+	@rm -rf $(FUZZ_COV_OUT)
+	@mkdir -p $(FUZZ_COV_OUT)/obj
+	@for f in src/*.c; do \
+	    $(FUZZ_CC) $(FUZZ_COV_CFLAGS) -fsanitize=fuzzer-no-link \
+	        `$(PKG_CONFIG) --cflags $(LIBS)` \
+	        -c "$$f" -o "$(FUZZ_COV_OUT)/obj/$$(basename $${f%.c}).o" || exit 1; \
+	done
+	@for h in $(notdir $(FUZZ_TARGETS)); do \
+	    $(FUZZ_CC) $(FUZZ_COV_CFLAGS) -fsanitize=fuzzer \
+	        `$(PKG_CONFIG) --cflags $(LIBS)` \
+	        fuzz/$$h.c $(FUZZ_COV_OUT)/obj/*.o \
+	        `$(PKG_CONFIG) --libs $(LIBS)` \
+	        -o $(FUZZ_COV_OUT)/$$h || exit 1; \
+	done
+	@for h in $(notdir $(FUZZ_TARGETS)); do \
+	    echo ">>> running $$h for 10s"; \
+	    LLVM_PROFILE_FILE=$(FUZZ_COV_OUT)/$$h.profraw \
+	        $(FUZZ_COV_OUT)/$$h -max_total_time=10 \
+	        -artifact_prefix=$(FUZZ_COV_OUT)/$$h- \
+	        >/dev/null 2>&1 || true; \
+	done
+	llvm-profdata merge -sparse $(FUZZ_COV_OUT)/*.profraw \
+	    -o $(FUZZ_COV_OUT)/merged.profdata
+	@# Remove only what llvm-cov regenerates; README.md + .gitignore
+	@# are committed and must survive a refresh.
+	@rm -rf $(FUZZ_COV_HTML)/coverage \
+	        $(FUZZ_COV_HTML)/index.html \
+	        $(FUZZ_COV_HTML)/style.css \
+	        $(FUZZ_COV_HTML)/control.js
+	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \
+	    llvm-cov show $(FUZZ_COV_OUT)/$$(basename $$first) \
+	        -instr-profile=$(FUZZ_COV_OUT)/merged.profdata \
+	        -format=html -output-dir=$(FUZZ_COV_HTML) \
+	        --ignore-filename-regex='/usr/.*|fuzz/.*' \
+	        src/
+	@# llvm-cov bakes the absolute build path into the output filename
+	@# tree and into HTML hrefs. Flatten the per-source tree to
+	@# coverage/src/ and strip $(CURDIR)/ from every HTML body so the
+	@# committed report is portable across clones — fresh checkouts on
+	@# any path still render correctly on GitHub.
+	@if [ -d "$(FUZZ_COV_HTML)/coverage$(CURDIR)" ]; then \
+	    mkdir -p "$(FUZZ_COV_HTML)/coverage-flat"; \
+	    cp -r "$(FUZZ_COV_HTML)/coverage$(CURDIR)/src" "$(FUZZ_COV_HTML)/coverage-flat/src"; \
+	    rm -rf "$(FUZZ_COV_HTML)/coverage"; \
+	    mv "$(FUZZ_COV_HTML)/coverage-flat" "$(FUZZ_COV_HTML)/coverage"; \
+	fi
+	@# Two passes: first fix hrefs of the form coverage/<abs-path>/src/...
+	@# (llvm-cov concatenates coverage/ with the absolute source path,
+	@# eating the leading slash), then strip any remaining $(CURDIR)/
+	@# occurrences from displayed file paths.
+	@find $(FUZZ_COV_HTML) -name '*.html' -exec sed -i \
+	    -e 's|coverage$(CURDIR)/|coverage/|g' \
+	    -e 's|$(CURDIR)/||g' \
+	    {} +
+	@echo
+	@echo "=== coverage summary ==="
+	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \
+	    llvm-cov report $(FUZZ_COV_OUT)/$$(basename $$first) \
+	        -instr-profile=$(FUZZ_COV_OUT)/merged.profdata \
+	        --ignore-filename-regex='/usr/.*|fuzz/.*' \
+	        src/
+	@echo
+	@echo "HTML report: $(FUZZ_COV_HTML)/index.html"
+
+# clean intentionally does NOT wipe $(FUZZ_COV_HTML) — the report is the
+# committed artefact, browsable without rebuilding. Re-run
+# `make fuzz-coverage` to refresh.
 clean:
-	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -241,6 +327,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean fuzz test test-symbols test-integration test-container \
+.PHONY: all debug clean fuzz fuzz-coverage test test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
         distclean install install-tmpfiles uninstall man install-man

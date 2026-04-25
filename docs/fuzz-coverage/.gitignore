@@ -1,0 +1,4 @@
+# The HTML report IS committed (so it renders on GitHub and persists in
+# fresh clones). Only ignore intermediate runtime artefacts that
+# llvm-cov writes alongside the HTML during a `make fuzz-coverage` run.
+*.profraw

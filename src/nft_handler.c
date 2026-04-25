@@ -129,9 +129,12 @@ static char *read_file(const char *path, size_t *out_len) {
  * Returns a new malloc'd buffer with substitutions applied, or NULL
  * on allocation failure. Caller must free().
  */
-static char *substitute_placeholders(const char *src, size_t src_len,
-                                      const char *placeholders[4],
-                                      const char *replacements[4]) {
+#ifndef FUZZ_BUILD
+static
+#endif
+char *substitute_placeholders(const char *src, size_t src_len,
+                              const char *placeholders[4],
+                              const char *replacements[4]) {
     /* Worst case: every placeholder expands. Over-allocate. */
     size_t max_expand = src_len * 2 + 1;
     char *out = malloc(max_expand);
@@ -150,6 +153,13 @@ static char *substitute_placeholders(const char *src, size_t src_len,
         if (!in_comment && c == '"') { in_quote = !in_quote; }
 
         if (in_comment || in_quote) {
+            /* Same bound check as the unmatched path below: leave room
+             * for the trailing '\0'. A long quoted string or comment
+             * after a placeholder expansion could otherwise overrun. */
+            if (wi + 1 >= max_expand) {
+                free(out);
+                return NULL;
+            }
             out[wi++] = c;
             i++;
             continue;
@@ -182,6 +192,15 @@ static char *substitute_placeholders(const char *src, size_t src_len,
             }
         }
         if (!matched) {
+            /* Mirror the matched-path check: leave room for the
+             * trailing '\0' written after the loop. Without this guard,
+             * a placeholder expansion that pushes wi to max_expand-1
+             * followed by an unmatched byte advances wi to max_expand,
+             * causing the terminator to write one past the buffer. */
+            if (wi + 1 >= max_expand) {
+                free(out);
+                return NULL;
+            }
             out[wi++] = c;
             i++;
         }
