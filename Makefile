@@ -265,11 +265,19 @@ fuzz-coverage:
 	        `$(PKG_CONFIG) --libs $(LIBS)` \
 	        -o $(FUZZ_COV_OUT)/$$h || exit 1; \
 	done
+	@# Each harness reads its seed/regression corpus from
+	@# fuzz/corpus/<harness-stem>/ (e.g., fuzz_fragment uses
+	@# fuzz/corpus/fragment/). Seeds materially improve coverage in the
+	@# 10s window — without them the IPv6 v4-mapped path, glob-in-include
+	@# path, and similar narrow branches stay unhit.
 	@for h in $(notdir $(FUZZ_TARGETS)); do \
-	    echo ">>> running $$h for 10s"; \
+	    corpus="fuzz/corpus/$${h#fuzz_}"; \
+	    [ -d "$$corpus" ] || corpus=""; \
+	    echo ">>> running $$h for 10s (corpus: $${corpus:-none})"; \
 	    LLVM_PROFILE_FILE=$(FUZZ_COV_OUT)/$$h.profraw \
 	        $(FUZZ_COV_OUT)/$$h -max_total_time=10 \
 	        -artifact_prefix=$(FUZZ_COV_OUT)/$$h- \
+	        $$corpus \
 	        >/dev/null 2>&1 || true; \
 	done
 	llvm-profdata merge -sparse $(FUZZ_COV_OUT)/*.profraw \

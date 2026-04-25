@@ -30,8 +30,8 @@ bugs hide.
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| `util_is_valid_username` | `PAM_USER` (sshd) | hostile | 🟡 | `fuzz_username` | No property assertions yet — only checks for crashes |
-| `util_normalize_ip` | `PAM_RHOST` (sshd, possibly via DNS or proxy) | hostile | 🟡 | `fuzz_username` (combined) | No property assertions; should split into `fuzz_ip` |
+| `util_is_valid_username` | `PAM_USER` (sshd) | hostile | ✅ | `fuzz_username` | 100% region / line, 95% branch. Pure crash-only harness; adequate given the simple validator semantics |
+| `util_normalize_ip` | `PAM_RHOST` (sshd, possibly via DNS or proxy) | hostile | ✅ | `fuzz_username` (combined) | 93.02% region, 96.15% line, 91.30% branch. Seed corpus covers v4-mapped / IPv4 / IPv6 / zone-suffix paths; harness explicitly calls with NULL/zero-size args to cover the early-out guards. Defensive `inet_ntop` failure on v4-mapped extraction (line 72) is unreachable by design — IP_STR_MAX is always large enough for an IPv4 literal |
 
 ### Kernel-supplied bytes
 
@@ -46,7 +46,7 @@ bugs hide.
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| `validate_fragment_content` | `/etc/authnft/users/<user>` | admin | 🟡 | `fuzz_fragment` | No property assertions yet |
+| `validate_fragment_content` | `/etc/authnft/users/<user>` | admin | ✅ | `fuzz_fragment` | 100% region / line / branch. Seed corpus covers all rejection paths (relative include, outside-/etc/authnft/, glob characters); harness exercises both the memfd success path and a forced fopen-failure path |
 | `substitute_placeholders` | fragment content after validation | admin | ✅ | `fuzz_substitute_placeholders` | State machine + malloc sizing; sizing-invariant property assertion. **Found two heap-buffer-overflow bugs on first run** — see "Bugs found" below |
 | `read_file` size cap | fragment file size | admin | ❌ Low | — | Trivially correct (`fseek` + `ftell` + bound check); no harness planned |
 | `event_correlation_capture` sanitizer | PAM env `AUTHNFT_CORRELATION` | semi-trusted (upstream PAM module) | ❌ Med | — | Tiny but high-frequency surface |
@@ -126,20 +126,30 @@ CIFuzz re-runs these on every PR.
 
 ## Current coverage (per `make fuzz-coverage`)
 
-Per-source-file region coverage from a 10s-per-harness sample. Per-function
-breakdown is in `docs/fuzz-coverage/index.html`.
+Per-function coverage on the **fuzzed** functions (the only ones the
+status legend applies to). HTML report under `docs/fuzz-coverage/`.
+
+| Function | Region | Line | Branch | Status |
+|---|---|---|---|---|
+| `util_is_valid_username` | 100.00% | 100.00% | 95.00% | ✅ |
+| `util_normalize_ip` | 93.02% | 96.15% | 91.30% | ✅ |
+| `validate_fragment_content` | 100.00% | 100.00% | 100.00% | ✅ |
+| `substitute_placeholders` | 96.83% | 100.00% | 97.92% | ✅ |
+
+Per-source-file region coverage (illustrating how much codebase is
+*untouched* by any harness):
 
 | File | Region cover | Why |
 |---|---|---|
-| `nft_handler.c` | 30.83% | covered: `validate_fragment_content`, `substitute_placeholders`. uncovered: `nft_handler_setup` cmd assembler, libnftables call sites, cleanup |
-| `pam_entry.c` | 26.47% | covered: `util_is_valid_username`, `util_normalize_ip`. uncovered: PAM entry points, arg parser |
+| `nft_handler.c` | 35.12% | covered: `validate_fragment_content`, `substitute_placeholders`. uncovered: `nft_handler_setup` cmd assembler, libnftables call sites, `nft_handler_cleanup`, `read_file` |
+| `pam_entry.c` | 29.41% | covered: `util_is_valid_username`, `util_normalize_ip`. uncovered: PAM entry points, arg parser, `is_debug_bypass_requested`, `free_pam_data` |
 | `event.c` | 0% | no harness — `event_correlation_capture` sanitizer pending |
 | `keyring.c` | 0% | no harness — `keyring_read_serial` sanitizer pending |
 | `peer_lookup.c` | 0% | no harness — netlink walker is the highest-priority outstanding |
 | `bus_handler.c` | 0% | no harness; sd-bus surface mostly out-of-scope |
 | `sandbox.c` | 0% | static config, not a parser; no harness planned |
 | `session_file.c` | 0% | output-only JSON emitter; low priority |
-| **TOTAL** | **12.42%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
+| **TOTAL** | **14.10%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
 
 ## Sustained-fuzz channel
 

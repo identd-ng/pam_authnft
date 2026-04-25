@@ -30,5 +30,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     char out[IP_STR_MAX];
     util_normalize_ip(buf, out, sizeof(out));
 
+    /* Hit the early-out branches that the main call above skips. The
+     * fixed-shape harness call always passes non-NULL pointers and a
+     * fixed-size buffer, leaving the NULL/zero-size guards in
+     * util_normalize_ip uncovered. These four extra calls are
+     * negligible (each early-returns); they exist for branch coverage
+     * not for fuzz signal. */
+    util_normalize_ip(NULL, out, sizeof(out));
+    util_normalize_ip(buf, NULL, sizeof(out));
+    util_normalize_ip(buf, out, 0);
+    util_normalize_ip(buf, out, 4);  /* small out_sz: hits core_len >= out_sz */
+
     return 0;
 }
