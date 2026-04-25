@@ -142,7 +142,7 @@ with a narrow schema.
 - systemd with D-Bus
 - nftables >= 1.0.6 (`socket cgroupv2` expression requires kernel >= 4.10)
 - Build: `gcc`, `make`, `pkg-config`
-- Libraries: `libnftables`, `libseccomp`, `libsystemd`, `libcap`, `pam`
+- Libraries: `libnftables`, `libseccomp`, `libsystemd`, `libcap`, `libaudit`, `pam`
 
 ### Build and install
 
