@@ -273,6 +273,10 @@ Every push and pull request triggers:
   - ASan / UBSan sanitizer builds
   - libFuzzer harnesses (CIFuzz workflow, 60s budget per harness)
   - Weekly Coverity Scan
+  - Weekly mull mutation-testing run
+    (.github/workflows/mutation.yml, Sunday 06:43 UTC) — surviving
+    mutations indicate either coverage gaps or dead code; see
+    docs/FUZZ_SURFACE.md "Mutation testing" for the review procedure
   - Nightly sustained fuzz cron (.github/workflows/fuzz-nightly.yml)
     — 30 min × 8 harnesses against the checked-in corpus
 

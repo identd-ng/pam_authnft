@@ -57,6 +57,11 @@ Medium-term
     Reason tags: missing | perms | content | nft-syntax. Field
     schema in docs/INTEGRATIONS.txt §6.2.7. The pam_syslog channel
     stays in place; audit is additive.
+[x] Mutation testing — Phase 4.3 of the security audit plan. Wired
+    via mull (LLVM-IR mutator); `make mutation-report` runs locally,
+    .github/workflows/mutation.yml runs weekly on Sunday 06:43 UTC.
+    See docs/FUZZ_SURFACE.md "Mutation testing" section for review
+    procedure; a surviving mutation = coverage gap or dead code.
 [ ] Pluggable fragment sources (not just /etc/authnft/users/<name>) —
     e.g., a fragment-generator socket, /etc/authnft/users.d/ overlays,
     or policy-engine fetch with atomic rename on disk.

@@ -28,6 +28,7 @@ column lists the bug class or signal each tool produces.
 | **OpenSSF Best Practices** | bestpractices.dev project 12496 | manual self-attest | governance / policy items the badge program tracks |
 | **CIFuzz** | `.github/workflows/cifuzz.yml` | every PR | 60 s × 8 fuzz harnesses (memory-safety regressions) |
 | **Nightly fuzz cron** | `.github/workflows/fuzz-nightly.yml` | daily 03:17 UTC | 30 min × 8 fuzz harnesses (deeper bugs that 60 s won't surface), auto-issue on crash |
+| **Mutation testing (mull)** | `.github/workflows/mutation.yml` + `make mutation-report` | weekly Sunday 06:43 UTC | LLVM-IR mutations across `src/*.c` + `tests/test_suite.c`; surviving mutations indicate either coverage gaps or dead code |
 | **Differential oracle** | `tests/oracle/`, run via `make test` | every PR | logic bugs in 5 small parsers (C vs Python re-implementation diff) |
 | **Property-based tests** | `tests/oracle/properties.py` | every PR | idempotence + round-trip violations on the same 5 parsers |
 | **Unit suite** | `tests/test_suite.c`, run via `make test` | every PR | 10 stages: symbol whitelist, sanitization, sandbox kill/survive, cgroup invariant, hardening flags, peer lookup, keyring fetch |
@@ -102,6 +103,7 @@ release process; a release that skips one is incomplete.
 | Daily | `fuzz-nightly` workflow | automated; auto-files issues on crash |
 | Weekly | OpenSSF Scorecard run | automated; SARIF surfaces in code-scanning |
 | Weekly | Coverity Scan | automated; defect dashboard |
+| Weekly | Mutation testing (`mutation.yml`, Sunday 06:43 UTC) | automated; surviving mutations reviewed against `tests/test_suite.c` |
 | Weekly | Dependabot scan | automated; PR per outdated action |
 | Soft-ongoing | Re-run `make trace` on kernel / glibc upgrades | maintainer (per `docs/TODO.txt`) |
 
@@ -113,7 +115,7 @@ get a formal write-up; internal audits are summarised in the relevant
 
 | When | Type | Scope | Outcome |
 |---|---|---|---|
-| 2026-04 (this audit) | Internal multi-phase | Phase 1 alloc paths, Phase 2 concurrency claims, Phase 3 trust model, Phase 4 differential + property testing, Phase 6.1 nightly fuzz, 6.5 audit hook | 4 real bugs found and fixed (3 heap OOBs + 1 off-by-one); harness coverage from 0 to 9 functions ≥ 90%; OSTIF best-practices alignment to mostly green |
+| 2026-04 (this audit) | Internal multi-phase | Phase 1 alloc paths, Phase 2 concurrency claims, Phase 3 trust model, Phase 4 differential + property + mutation testing, Phase 6.1 nightly fuzz, 6.5 audit hook | 4 real bugs found and fixed (3 heap OOBs + 1 off-by-one); harness coverage from 0 to 9 functions ≥ 90%; mutation testing wired in (mull, weekly cron); OSTIF best-practices alignment to mostly green |
 
 When external audits land, append a row.
 
