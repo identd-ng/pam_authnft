@@ -223,6 +223,53 @@ reproducibility-check:
 	    exit 1; \
 	fi
 
+# Mutation testing — Phase 4.3 of the security audit plan. Uses
+# mull (https://github.com/mull-project/mull), the LLVM-IR mutation
+# tester. Same toolchain class as `make fuzz` (clang + LLVM).
+#
+# A surviving mutation = a line whose IR-level change wasn't caught
+# by any test. Two interpretations:
+#   - coverage gap: add a test that catches the change
+#   - dead code:   the line has no observable effect
+#
+# Mull operates by embedding LLVM bitcode into the test binary at
+# compile time (via -fpass-plugin=$(mull --print-pass-plugin-path))
+# and then mutating that bitcode in-process at run time. Each
+# mutation re-runs the binary; mull tallies kills and survivors.
+#
+# Requires: mull (mull-runner, mull-cxx) and a matching clang.
+# Install:
+#   Debian/Ubuntu: https://app.packagecloud.io/mull-project/mull-stable
+#   Arch:          AUR `mull` or `mull-bin`
+#
+# The CI workflow .github/workflows/mutation.yml installs mull from
+# the project's PackageCloud DEB repo and runs this target weekly.
+MULL_CXX    ?= mull-cxx
+MULL_RUNNER ?= mull-runner
+
+mutation-report: $(TEST_BIN).mull
+	@command -v $(MULL_RUNNER) >/dev/null 2>&1 || { \
+	    echo "$(MULL_RUNNER) not in PATH — install mull first."; \
+	    echo "  Debian/Ubuntu: https://app.packagecloud.io/mull-project/mull-stable"; \
+	    echo "  Arch:          AUR mull / mull-bin"; \
+	    exit 1; \
+	}
+	$(MULL_RUNNER) ./$(TEST_BIN).mull
+
+# Build the test binary using mull-cxx, the documented clang wrapper
+# that embeds LLVM bitcode and injects mull's pass plugin. Avoids
+# guessing the plugin path or wiring -fembed-bitcode-marker by hand
+# — mull-cxx handles the LLVM↔mull plumbing for the LLVM major it
+# was packaged against.
+$(TEST_BIN).mull: tests/test_suite.c $(wildcard src/*.c) include/authnft.h
+	@command -v $(MULL_CXX) >/dev/null 2>&1 || { \
+	    echo "$(MULL_CXX) not in PATH — install mull first (see comment above)."; \
+	    exit 1; \
+	}
+	$(MULL_CXX) $(CFLAGS_BASE) `$(PKG_CONFIG) --cflags $(LIBS)` -g -O0 \
+	    tests/test_suite.c $(wildcard src/*.c) -o $@ \
+	    `$(PKG_CONFIG) --libs $(LIBS)`
+
 install: $(TARGET) install-tmpfiles
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
@@ -402,7 +449,7 @@ fuzz-coverage:
 # committed artefact, browsable without rebuilding. Re-run
 # `make fuzz-coverage` to refresh.
 clean:
-	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) $(ORACLE_RUNNER) $(SBOM) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) $(TEST_BIN).mull $(ORACLE_RUNNER) $(SBOM) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -410,6 +457,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean fuzz fuzz-coverage reproducibility-check sbom test test-oracle test-symbols test-integration test-container \
+.PHONY: all debug clean fuzz fuzz-coverage reproducibility-check sbom mutation-report test test-oracle test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
         distclean install install-tmpfiles uninstall man install-man
