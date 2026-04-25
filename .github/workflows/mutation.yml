@@ -1,0 +1,91 @@
+name: mutation
+# Mutation testing — Phase 4.3 of the security audit plan, using
+# mull (https://github.com/mull-project/mull). Same toolchain class
+# as `make fuzz` (clang + LLVM); the only new dep is mull itself.
+#
+# Asks "does the test suite actually catch source-code changes?".
+# A surviving mutation is either a coverage gap (add a test) or
+# dead code (delete it).
+#
+# Trigger: weekly (mull runs are 30+ minutes; doesn't suit per-PR)
+# plus workflow_dispatch for ad-hoc runs.
+on:
+  schedule:
+    # Sunday 06:43 UTC. Off-peak; offset from common cron times.
+    - cron: '43 6 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pin to a specific mull / LLVM major. Bump when a new release is
+  # tested; we don't want a Saturday-night PackageCloud update to
+  # silently break the workflow.
+  MULL_LLVM_MAJOR: '17'
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libnftables-dev libseccomp-dev libsystemd-dev \
+            libpam0g-dev libcap-dev libaudit-dev \
+            curl gnupg ca-certificates
+
+      - name: Install mull from upstream PackageCloud
+        run: |
+          # Pin to the specific release URL; do not run a curl|sh
+          # bootstrap. https://app.packagecloud.io/mull-project/mull-stable
+          curl -fsSL "https://packagecloud.io/install/repositories/mull-project/mull-stable/script.deb.sh" \
+              -o /tmp/mull-repo.sh
+          # Quick provenance check on the script before sourcing —
+          # it's third-party content. Length-bounded sanity check;
+          # the full audit is on the user.
+          test "$(wc -l < /tmp/mull-repo.sh)" -lt 200
+          sudo bash /tmp/mull-repo.sh
+          # The mull-${MAJOR} package brings clang-${MAJOR} as a
+          # versioned dep (mull is built against that exact LLVM).
+          sudo apt-get install -y "mull-${MULL_LLVM_MAJOR}"
+          # Generic-name symlinks for the Makefile.
+          sudo ln -sf "/usr/bin/mull-runner-${MULL_LLVM_MAJOR}" /usr/local/bin/mull-runner
+          sudo ln -sf "/usr/bin/mull-cxx-${MULL_LLVM_MAJOR}"    /usr/local/bin/mull-cxx
+          mull-runner --version
+
+      - name: Build mull-instrumented test binary
+        run: make authnft_test.mull
+
+      - name: Run mull
+        id: mull
+        run: |
+          set +e
+          mull-runner ./authnft_test.mull > mutation-report.txt 2>&1
+          ec=$?
+          set -e
+          echo "exit=$ec" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Mutation testing report"
+            echo
+            echo '```'
+            tail -200 mutation-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ec" -ne 0 ]; then
+            echo "::warning::mull reported survivors; see report"
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: mutation-report.txt
+          retention-days: 30

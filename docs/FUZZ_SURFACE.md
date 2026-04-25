@@ -228,6 +228,54 @@ Per-source-file region coverage (illustrating how much codebase is
 | `session_file.c` | 0% | output-only JSON emitter; low priority |
 | **TOTAL** | **22.23%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
 
+## Mutation testing (Phase 4.3)
+
+`make mutation-report` runs **mull** (https://github.com/mull-project/mull)
+against an LLVM-bitcode-instrumented build of `authnft_test`. Mull
+mutates the bitcode in process (~30 mutation operators across
+arithmetic, boolean, comparison, and constant-replacement classes)
+and re-runs the test binary per mutation. Output: a list of
+mutations classified as KILLED (some test failed) or SURVIVED (every
+test passed).
+
+A surviving mutation = a line whose change wasn't caught by any
+test. Two interpretations:
+
+- **Coverage gap** — add a test that catches the change.
+- **Dead code** — the line has no observable effect, even when
+  changed; a reader can simplify or delete it.
+
+Mull is in the same toolchain family as `make fuzz` (clang + LLVM),
+so it doesn't introduce a new dependency class. The Makefile target
+needs `mull-runner` and `clang-N` for the LLVM major you've installed;
+the workflow installs both from the upstream PackageCloud DEB repo.
+
+CI: `.github/workflows/mutation.yml` runs weekly (Sunday 06:43 UTC)
+and publishes the report as a workflow artefact + a GitHub Step
+Summary. Workflow run time: ~30 min for the full mutation set.
+
+### What this catches that fuzz / oracle / property tests do not
+
+- **Boring-helper coverage gaps** — initialization paths, error
+  logs, defensive null checks. Code that fuzz harnesses never reach
+  because it's not parser-class, but which a mutation in should
+  still produce SOME test signal.
+- **Dead lines that look like decisions.** A line `if (X)` whose
+  body has no observable effect shows up as both branches'
+  mutations surviving.
+
+### What it does NOT catch
+
+- Complex semantic bugs — mutation operators are local; a wrong
+  algorithm needs differential testing or property-based checks.
+- Bugs introduced by INTERACTIONS between functions — mutation is
+  per-line; cross-function effects need integration tests.
+- Anything in test code itself — mull operates on the test
+  binary's bitcode, but the tests themselves are the oracle, not
+  the subject.
+
+---
+
 ## Sustained-fuzz channel
 
 | Channel | Status | Duration | Trigger |
