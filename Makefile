@@ -335,8 +335,16 @@ fuzz-coverage:
 # clean intentionally does NOT wipe $(FUZZ_COV_HTML) — the report is the
 # committed artefact, browsable without rebuilding. Re-run
 # `make fuzz-coverage` to refresh.
+
 clean:
-	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) $(ORACLE_RUNNER) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	# Build/test directories — recursive removal.
+	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) .container-result
+	# Build artefacts and intermediate files.
+	rm -f  $(TARGET) $(TEST_BIN) $(ORACLE_RUNNER) \
+	       *.d rules.tmp trace.log trace-claims.log trace-features.log \
+	       man/pam_authnft.8
+	# NOTE: docs/fuzz-coverage/ is intentionally NOT cleaned. It's the
+	# committed llvm-cov HTML report; rebuild with `make fuzz-coverage`.
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
