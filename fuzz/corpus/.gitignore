@@ -1,0 +1,9 @@
+# libFuzzer writes auto-generated corpus files here during fuzz runs.
+# We only commit hand-curated regression inputs (`regression_*`) and
+# seed inputs (`seed_*`) — the rest is fuzzer-internal state and
+# regenerates on demand.
+*
+!.gitignore
+!*/
+!*/regression_*
+!*/seed_*
