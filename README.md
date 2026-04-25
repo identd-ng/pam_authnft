@@ -4,6 +4,7 @@
 [![cppcheck](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml)
 [![CodeQL](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml)
 [![sanitizers](https://github.com/identd-ng/pam_authnft/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/sanitizers.yml)
+[![CIFuzz](https://github.com/identd-ng/pam_authnft/actions/workflows/cifuzz.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/cifuzz.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12496/badge?v=passing)](https://www.bestpractices.dev/projects/12496)
 [![Coverity Scan](https://scan.coverity.com/projects/pam_authnft/badge.svg)](https://scan.coverity.com/projects/pam_authnft)
 [![Language: C](https://img.shields.io/badge/language-C-blue.svg)](https://en.wikipedia.org/wiki/C_(programming_language))
