@@ -44,5 +44,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     validate_fragment_content(NULL, path);
 
     close(fd);
+
+    /* Cover the fopen-failure branch (`if (!f) return -1;`). The memfd
+     * path above always opens successfully, so this branch would
+     * otherwise sit at zero hits in `make fuzz-coverage`. Cheap. */
+    validate_fragment_content(NULL, "/dev/null/no-such-path");
+
     return 0;
 }

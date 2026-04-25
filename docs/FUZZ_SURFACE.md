@@ -30,26 +30,26 @@ bugs hide.
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| `util_is_valid_username` | `PAM_USER` (sshd) | hostile | 🟡 | `fuzz_username` | No property assertions yet — only checks for crashes |
-| `util_normalize_ip` | `PAM_RHOST` (sshd, possibly via DNS or proxy) | hostile | 🟡 | `fuzz_username` (combined) | No property assertions; should split into `fuzz_ip` |
+| `util_is_valid_username` | `PAM_USER` (sshd) | hostile | ✅ | `fuzz_username` | 100% region / line, 95% branch. Pure crash-only harness; adequate given the simple validator semantics |
+| `util_normalize_ip` | `PAM_RHOST` (sshd, possibly via DNS or proxy) | hostile | ✅ | `fuzz_username` (combined) | 93.02% region, 96.15% line, 91.30% branch. Seed corpus covers v4-mapped / IPv4 / IPv6 / zone-suffix paths; harness explicitly calls with NULL/zero-size args to cover the early-out guards. Defensive `inet_ntop` failure on v4-mapped extraction (line 72) is unreachable by design — IP_STR_MAX is always large enough for an IPv4 literal |
 
 ### Kernel-supplied bytes
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| netlink walker in `peer_lookup_tcp` | `NETLINK_SOCK_DIAG` reply | semi-hostile (any CAP_NET_ADMIN process) | 🟠 ❌ **High** | — | Hand-rolled NLA walker. Highest-payoff harness in the codebase |
-| `socket:[NNNN]` parser in `peer_lookup_tcp` | `/proc/<pid>/fd/N` symlink | trusted | 🟠 ❌ Med | — | Integer parse, embedded NUL, overflow |
-| `keyring_read_serial` payload sanitizer | `keyctl(KEYCTL_READ)` | semi-trusted (producer trusted, consumer must defend) | 🟠 ❌ Med | — | printable-ASCII filter; truncation, journal-field-confusing chars |
-| `util_get_cgroup_path` invariant | `sd_pid_get_cgroup` return | trusted | ❌ Med | — | Depth/prefix validator; rejection paths matter |
+| `peer_parse_diag_chunk` (extracted from `peer_lookup_tcp`) | `NETLINK_SOCK_DIAG` reply | semi-hostile (any CAP_NET_ADMIN process) | ✅ | `fuzz_netlink_diag` | 100% region / 100% line, 95.65% branch. Hand-rolled walk over `nlmsghdr` headers + `inet_diag_msg` cast. **Found a heap-buffer-overflow on first run** — see "Bugs found" |
+| `parse_socket_inode` (extracted from `collect_socket_inodes`) | `/proc/<pid>/fd/N` symlink | trusted | ✅ | `fuzz_socket_inode` | 100% region / line / branch. Thin sscanf wrapper; harness exists as a regression guard for any future hand-rolled replacement |
+| `keyring_sanitize` (extracted from `keyring_read_serial`) | `keyctl(KEYCTL_READ)` payload | semi-trusted (producer trusted, consumer must defend) | ✅ | `fuzz_keyring_sanitize` | 100% region / line / branch. Property assertions on output character class, length cap, NUL termination |
+| `validate_cgroup_path` (extracted from `util_get_cgroup_path`) | `sd_pid_get_cgroup` return | trusted | ✅ | `fuzz_cgroup_path` | 95.45% region / 100% line / 100% branch. **Found a latent bug by inspection** during refactor — see "Bugs found" |
 
 ### Admin-controlled inputs (root-owned files / PAM env)
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| `validate_fragment_content` | `/etc/authnft/users/<user>` | admin | 🟡 | `fuzz_fragment` | No property assertions yet |
+| `validate_fragment_content` | `/etc/authnft/users/<user>` | admin | ✅ | `fuzz_fragment` | 100% region / line / branch. Seed corpus covers all rejection paths (relative include, outside-/etc/authnft/, glob characters); harness exercises both the memfd success path and a forced fopen-failure path |
 | `substitute_placeholders` | fragment content after validation | admin | ✅ | `fuzz_substitute_placeholders` | State machine + malloc sizing; sizing-invariant property assertion. **Found two heap-buffer-overflow bugs on first run** — see "Bugs found" below |
 | `read_file` size cap | fragment file size | admin | ❌ Low | — | Trivially correct (`fseek` + `ftell` + bound check); no harness planned |
-| `event_correlation_capture` sanitizer | PAM env `AUTHNFT_CORRELATION` | semi-trusted (upstream PAM module) | ❌ Med | — | Tiny but high-frequency surface |
+| `corr_sanitize_copy` (extracted from `event_correlation_capture`) | PAM env `AUTHNFT_CORRELATION` | semi-trusted (upstream PAM module) | ✅ | `fuzz_correlation_capture` | 100% region / line / branch. Drops bytes outside the journal-field-safe character class |
 | PAM module arg parser (`rhost_policy=…`, `claims_env=…`) | PAM config | admin | ❌ Low | — | Tiny |
 
 ### Composed nft command stream
@@ -117,29 +117,47 @@ the case for fuzzing self-evident.
 |---|---|---|---|
 | `fuzz_substitute_placeholders` | 1-byte heap-buffer-overflow at `nft_handler.c:208` (terminator write). Triggered when a placeholder expansion pushes `wi` to `max_expand-1` and is followed by an unmatched byte; the unmatched-byte path had no bounds check, advancing `wi` to `max_expand` and the post-loop `out[wi]='\0'` wrote 1 byte past the allocation. Found ~200k iterations after harness was wired in. | Med (fragment trust model is admin-only, so triggering is admin-self-foot-shot, but ASan-detectable OOB is a memory-safety bug regardless). Caused by replacement strings whose total expansion approaches `2*src_len`. | this PR |
 | `fuzz_substitute_placeholders` | Same OOB pattern at `nft_handler.c:163` (comment/quote pass-through write). Three write paths in the function, only the matched-placeholder path had a bounds check. Found seconds after the first fix. | Med (same trust model) | this PR |
+| `fuzz_netlink_diag` | Heap-buffer-overflow at `peer_lookup.c:134` (then-existing `NLMSG_OK` walk). Root cause: `NLMSG_NEXT` advances by `NLMSG_ALIGN(nlmsg_len)` (4-byte aligned) but `NLMSG_OK` only validates `nlmsg_len <= remaining` (without alignment). A crafted `nlmsg_len` whose 4-byte-aligned size exceeds `remaining` slips past `NLMSG_OK`, then `len -= align(nlmsg_len)` underflows the size_t, and the next iteration dereferences `nlh` past the buffer. Found within ~1k iterations of the harness being wired in. Fix: hand-rolled walk that validates alignment before advancing. | **High** — kernel-supplied bytes (any `CAP_NET_ADMIN` process can post crafted netlink replies); classic netlink-parser CVE pattern. Latent in the codebase since `peer_lookup_tcp` was introduced. | this PR |
+| `validate_cgroup_path` (found by inspection during refactor for `fuzz_cgroup_path`, not by fuzzing) | Off-by-one in length check: `if (first_len != 14 \|\| memcmp(p, "authnft.slice", 14) != 0)`. The string `"authnft.slice"` is 13 characters, so the check rejected every valid input. Latent bug — production never called the function (the K1 fix migrated `pam_entry.c` to deterministic `snprintf` construction of the cgroup path), and the unit test only verifies that the function REJECTS non-authnft.slice inputs (it expects rejection by design, so universal-rejection looked correct). Fixed: change `14` to `13` in both the length check and the `memcmp` length. | Low — dead code in production. Logic-bug class that `make fuzz-coverage` would not have caught alone, but the refactor-to-fuzz-it process surfaced it. | this PR |
 
 Regression inputs preserved at:
 - `fuzz/corpus/substitute_placeholders/regression_oob_terminator`
 - `fuzz/corpus/substitute_placeholders/regression_oob_unmatched_path`
+- `fuzz/corpus/netlink_diag/regression_oob_alignment_underflow`
 
 CIFuzz re-runs these on every PR.
 
 ## Current coverage (per `make fuzz-coverage`)
 
-Per-source-file region coverage from a 10s-per-harness sample. Per-function
-breakdown is in `docs/fuzz-coverage/index.html`.
+Per-function coverage on the **fuzzed** functions (the only ones the
+status legend applies to). HTML report under `docs/fuzz-coverage/`.
+
+| Function | Region | Line | Branch | Status |
+|---|---|---|---|---|
+| `util_is_valid_username` | 100.00% | 100.00% | 95.00% | ✅ |
+| `util_normalize_ip` | 93.02% | 96.15% | 91.30% | ✅ |
+| `validate_fragment_content` | 100.00% | 100.00% | 100.00% | ✅ |
+| `substitute_placeholders` | 96.83% | 100.00% | 97.92% | ✅ |
+| `peer_parse_diag_chunk` | 100.00% | 100.00% | 95.65% | ✅ |
+| `parse_socket_inode` | 100.00% | 100.00% | 100.00% | ✅ |
+| `keyring_sanitize` | 100.00% | 100.00% | 100.00% | ✅ |
+| `corr_sanitize_copy` | 100.00% | 100.00% | 100.00% | ✅ |
+| `validate_cgroup_path` | 95.45% | 100.00% | 100.00% | ✅ |
+
+Per-source-file region coverage (illustrating how much codebase is
+*untouched* by any harness):
 
 | File | Region cover | Why |
 |---|---|---|
-| `nft_handler.c` | 30.83% | covered: `validate_fragment_content`, `substitute_placeholders`. uncovered: `nft_handler_setup` cmd assembler, libnftables call sites, cleanup |
-| `pam_entry.c` | 26.47% | covered: `util_is_valid_username`, `util_normalize_ip`. uncovered: PAM entry points, arg parser |
-| `event.c` | 0% | no harness — `event_correlation_capture` sanitizer pending |
-| `keyring.c` | 0% | no harness — `keyring_read_serial` sanitizer pending |
-| `peer_lookup.c` | 0% | no harness — netlink walker is the highest-priority outstanding |
+| `nft_handler.c` | 35.12% | covered: `validate_fragment_content`, `substitute_placeholders`. uncovered: `nft_handler_setup` cmd assembler, libnftables call sites, `nft_handler_cleanup`, `read_file` |
+| `pam_entry.c` | 29.41% | covered: `util_is_valid_username`, `util_normalize_ip`. uncovered: PAM entry points, arg parser, `is_debug_bypass_requested`, `free_pam_data` |
+| `peer_lookup.c` | 48.15% | covered: `peer_parse_diag_chunk`. uncovered: `peer_lookup_tcp`, `collect_socket_inodes`, `send_diag_request`, `scan_diag_reply` (I/O wrappers) |
+| `keyring.c` | ≈40% | covered: `keyring_sanitize`, `is_safe`. uncovered: `keyring_read_serial`, `keyring_fetch_tag`, `keyctl_syscall` (require live kernel keyring + PAM context) |
+| `event.c` | small | covered: `corr_sanitize_copy`, `is_corr_safe`. uncovered: `event_correlation_capture` (clock + getrandom + getpid synthesis path), `event_open_emit`, `event_close_emit` (require live sd-bus journal socket) |
 | `bus_handler.c` | 0% | no harness; sd-bus surface mostly out-of-scope |
 | `sandbox.c` | 0% | static config, not a parser; no harness planned |
 | `session_file.c` | 0% | output-only JSON emitter; low priority |
-| **TOTAL** | **12.42%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
+| **TOTAL** | **22.23%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
 
 ## Sustained-fuzz channel
 

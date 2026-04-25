@@ -207,7 +207,12 @@ FUZZ_COMMON = -g -O1 -Iinclude -D_GNU_SOURCE -DFUZZ_BUILD \
 # drop the source in fuzz/ and append the binary path here.
 FUZZ_TARGETS = $(FUZZ_OUT)/fuzz_username \
                $(FUZZ_OUT)/fuzz_fragment \
-               $(FUZZ_OUT)/fuzz_substitute_placeholders
+               $(FUZZ_OUT)/fuzz_substitute_placeholders \
+               $(FUZZ_OUT)/fuzz_netlink_diag \
+               $(FUZZ_OUT)/fuzz_keyring_sanitize \
+               $(FUZZ_OUT)/fuzz_correlation_capture \
+               $(FUZZ_OUT)/fuzz_cgroup_path \
+               $(FUZZ_OUT)/fuzz_socket_inode
 
 FUZZ_SRC_OBJS = $(patsubst src/%.c,$(FUZZ_OUT)/obj/%.o,$(wildcard src/*.c))
 
@@ -265,25 +270,33 @@ fuzz-coverage:
 	        `$(PKG_CONFIG) --libs $(LIBS)` \
 	        -o $(FUZZ_COV_OUT)/$$h || exit 1; \
 	done
+	@# Each harness reads its seed/regression corpus from
+	@# fuzz/corpus/<harness-stem>/ (e.g., fuzz_fragment uses
+	@# fuzz/corpus/fragment/). Seeds materially improve coverage in the
+	@# 10s window — without them the IPv6 v4-mapped path, glob-in-include
+	@# path, and similar narrow branches stay unhit.
 	@for h in $(notdir $(FUZZ_TARGETS)); do \
-	    echo ">>> running $$h for 10s"; \
+	    corpus="fuzz/corpus/$${h#fuzz_}"; \
+	    [ -d "$$corpus" ] || corpus=""; \
+	    echo ">>> running $$h for 10s (corpus: $${corpus:-none})"; \
 	    LLVM_PROFILE_FILE=$(FUZZ_COV_OUT)/$$h.profraw \
 	        $(FUZZ_COV_OUT)/$$h -max_total_time=10 \
 	        -artifact_prefix=$(FUZZ_COV_OUT)/$$h- \
+	        $$corpus \
 	        >/dev/null 2>&1 || true; \
 	done
 	llvm-profdata merge -sparse $(FUZZ_COV_OUT)/*.profraw \
 	    -o $(FUZZ_COV_OUT)/merged.profdata
-	@# Remove only what llvm-cov regenerates; README.md + .gitignore
-	@# are committed and must survive a refresh.
-	@rm -rf $(FUZZ_COV_HTML)/coverage \
-	        $(FUZZ_COV_HTML)/index.html \
-	        $(FUZZ_COV_HTML)/style.css \
-	        $(FUZZ_COV_HTML)/control.js
+	@# Atomic-swap the HTML report so a developer browsing
+	@# docs/fuzz-coverage/index.html never sees a missing or
+	@# half-written file during regeneration. Render to a sibling
+	@# directory, then mv-in-place. README.md + .gitignore stay put.
+	@rm -rf $(FUZZ_COV_HTML).new $(FUZZ_COV_HTML).old
+	@mkdir -p $(FUZZ_COV_HTML).new
 	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \
 	    llvm-cov show $(FUZZ_COV_OUT)/$$(basename $$first) \
 	        -instr-profile=$(FUZZ_COV_OUT)/merged.profdata \
-	        -format=html -output-dir=$(FUZZ_COV_HTML) \
+	        -format=html -output-dir=$(FUZZ_COV_HTML).new \
 	        --ignore-filename-regex='/usr/.*|fuzz/.*' \
 	        src/
 	@# llvm-cov bakes the absolute build path into the output filename
@@ -291,20 +304,31 @@ fuzz-coverage:
 	@# coverage/src/ and strip $(CURDIR)/ from every HTML body so the
 	@# committed report is portable across clones — fresh checkouts on
 	@# any path still render correctly on GitHub.
-	@if [ -d "$(FUZZ_COV_HTML)/coverage$(CURDIR)" ]; then \
-	    mkdir -p "$(FUZZ_COV_HTML)/coverage-flat"; \
-	    cp -r "$(FUZZ_COV_HTML)/coverage$(CURDIR)/src" "$(FUZZ_COV_HTML)/coverage-flat/src"; \
-	    rm -rf "$(FUZZ_COV_HTML)/coverage"; \
-	    mv "$(FUZZ_COV_HTML)/coverage-flat" "$(FUZZ_COV_HTML)/coverage"; \
+	@if [ -d "$(FUZZ_COV_HTML).new/coverage$(CURDIR)" ]; then \
+	    mkdir -p "$(FUZZ_COV_HTML).new/coverage-flat"; \
+	    cp -r "$(FUZZ_COV_HTML).new/coverage$(CURDIR)/src" "$(FUZZ_COV_HTML).new/coverage-flat/src"; \
+	    rm -rf "$(FUZZ_COV_HTML).new/coverage"; \
+	    mv "$(FUZZ_COV_HTML).new/coverage-flat" "$(FUZZ_COV_HTML).new/coverage"; \
 	fi
 	@# Two passes: first fix hrefs of the form coverage/<abs-path>/src/...
 	@# (llvm-cov concatenates coverage/ with the absolute source path,
 	@# eating the leading slash), then strip any remaining $(CURDIR)/
 	@# occurrences from displayed file paths.
-	@find $(FUZZ_COV_HTML) -name '*.html' -exec sed -i \
+	@find $(FUZZ_COV_HTML).new -name '*.html' -exec sed -i \
 	    -e 's|coverage$(CURDIR)/|coverage/|g' \
 	    -e 's|$(CURDIR)/||g' \
 	    {} +
+	@# Now atomic-swap the freshly-rendered tree into place. The
+	@# committed README.md and .gitignore are copied across so they
+	@# survive the swap. The previous report is moved aside, then
+	@# removed only after the new one is in place.
+	@cp $(FUZZ_COV_HTML)/README.md   $(FUZZ_COV_HTML).new/ 2>/dev/null || true
+	@cp $(FUZZ_COV_HTML)/.gitignore  $(FUZZ_COV_HTML).new/ 2>/dev/null || true
+	@if [ -d $(FUZZ_COV_HTML) ]; then \
+	    mv $(FUZZ_COV_HTML) $(FUZZ_COV_HTML).old; \
+	fi
+	@mv $(FUZZ_COV_HTML).new $(FUZZ_COV_HTML)
+	@rm -rf $(FUZZ_COV_HTML).old
 	@echo
 	@echo "=== coverage summary ==="
 	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \

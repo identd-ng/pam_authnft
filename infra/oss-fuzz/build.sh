@@ -50,3 +50,40 @@ $CC $CFLAGS $COMMON $PKGCF \
     fuzz/fuzz_substitute_placeholders.c "$WORK"/obj/*.o \
     $LIB_FUZZING_ENGINE $PKGLD \
     -o "$OUT/fuzz_substitute_placeholders"
+
+# fuzz_netlink_diag: exercises peer_parse_diag_chunk, the
+# NETLINK_SOCK_DIAG response walker (NLMSG_OK / inet_diag_msg cast).
+# Highest attacker-reachable parser in the module — kernel-supplied
+# bytes flow into hand-rolled length arithmetic.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_netlink_diag.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_netlink_diag"
+
+# fuzz_keyring_sanitize: printable-ASCII filter that scrubs a
+# kernel-keyring payload before it lands in an nftables comment field.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_keyring_sanitize.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_keyring_sanitize"
+
+# fuzz_correlation_capture: AUTHNFT_CORRELATION PAM env sanitizer.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_correlation_capture.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_correlation_capture"
+
+# fuzz_cgroup_path: depth-invariant validator for cgroup paths returned
+# by sd_pid_get_cgroup. Pure string parser; off-by-one bugs here either
+# silently deny every authnft session or accept malformed paths.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_cgroup_path.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_cgroup_path"
+
+# fuzz_socket_inode: parse_socket_inode (regression guard for a thin
+# sscanf wrapper used during /proc/<pid>/fd traversal).
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_socket_inode.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_socket_inode"
