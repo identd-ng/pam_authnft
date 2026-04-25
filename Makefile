@@ -231,10 +231,16 @@ fuzz: $(FUZZ_TARGETS)
 # Coverage measurement — builds harnesses with -fprofile-instr-generate
 # -fcoverage-mapping (separate from `make fuzz` since coverage flags are
 # load-bearing across the whole link). Runs each harness for ~10s,
-# merges profdata, generates HTML at fuzz/coverage/html/index.html and
+# merges profdata, generates HTML at docs/fuzz-coverage/index.html and
 # a text summary on stdout. The 90% per-harness coverage bar is the
 # threshold for promoting a row in docs/FUZZ_SURFACE.md from 🟡 to ✅.
-FUZZ_COV_OUT = fuzz/coverage
+#
+# Build artefacts (objects, harness binaries, .profraw, .profdata) live
+# under FUZZ_COV_OUT and ARE wiped by `make clean`. The HTML report under
+# FUZZ_COV_HTML is preserved across `make clean` so it can be browsed
+# without rebuilding.
+FUZZ_COV_OUT  = fuzz/coverage
+FUZZ_COV_HTML = docs/fuzz-coverage
 FUZZ_COV_CFLAGS = $(FUZZ_COMMON) -fprofile-instr-generate -fcoverage-mapping
 
 fuzz-coverage:
@@ -263,10 +269,11 @@ fuzz-coverage:
 	done
 	llvm-profdata merge -sparse $(FUZZ_COV_OUT)/*.profraw \
 	    -o $(FUZZ_COV_OUT)/merged.profdata
+	@rm -rf $(FUZZ_COV_HTML)
 	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \
 	    llvm-cov show $(FUZZ_COV_OUT)/$$(basename $$first) \
 	        -instr-profile=$(FUZZ_COV_OUT)/merged.profdata \
-	        -format=html -output-dir=$(FUZZ_COV_OUT)/html \
+	        -format=html -output-dir=$(FUZZ_COV_HTML) \
 	        --ignore-filename-regex='/usr/.*|fuzz/.*' \
 	        src/
 	@echo
@@ -277,8 +284,11 @@ fuzz-coverage:
 	        --ignore-filename-regex='/usr/.*|fuzz/.*' \
 	        src/
 	@echo
-	@echo "HTML report: $(FUZZ_COV_OUT)/html/index.html"
+	@echo "HTML report: $(FUZZ_COV_HTML)/index.html"
 
+# clean intentionally does NOT wipe $(FUZZ_COV_HTML) — the report is the
+# committed artefact, browsable without rebuilding. Re-run
+# `make fuzz-coverage` to refresh.
 clean:
 	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 

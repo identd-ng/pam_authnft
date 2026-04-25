@@ -97,7 +97,7 @@ in this document, regardless of duration:
 `make fuzz-coverage` builds the harnesses with `-fprofile-instr-generate
 -fcoverage-mapping` (in addition to ASan + libFuzzer), runs each harness
 for ~10s, merges profdata, generates an HTML report at
-`fuzz/coverage/html/index.html` and a text summary on stderr.
+`docs/fuzz-coverage/index.html` and a text summary on stderr.
 
 **Run after every harness addition.** Without coverage measurement, "we
 have a harness for X" is a claim, not a fact. The coverage report is the
@@ -127,7 +127,7 @@ CIFuzz re-runs these on every PR.
 ## Current coverage (per `make fuzz-coverage`)
 
 Per-source-file region coverage from a 10s-per-harness sample. Per-function
-breakdown is in `fuzz/coverage/html/index.html`.
+breakdown is in `docs/fuzz-coverage/index.html`.
 
 | File | Region cover | Why |
 |---|---|---|
