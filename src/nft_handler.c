@@ -184,6 +184,44 @@ static char *substitute_placeholders(const char *src, size_t src_len,
     return out;
 }
 
+/*
+ * Best-effort rollback of partial nft state created by nft_handler_setup
+ * before it failed. Removes the per-session chain, three sets, and (if
+ * captured) the jump rule. Tolerates absent objects — if nothing was
+ * created yet (e.g., call 1 failed atomically), the transaction will
+ * fail and we discard the result.
+ *
+ * Edge case: if call 2 succeeded but the handle parse failed, the jump
+ * rule exists in the kernel but `sd->jump_handle` is still 0. We can't
+ * delete-by-name (nftables requires handle), so the jump rule leaks in
+ * that path. Documented; rare (only fires on a libnftables echo-format
+ * regression).
+ */
+static void nft_partial_cleanup(struct nft_ctx *ctx,
+                                 const authnft_session_t *sd) {
+    char cmd[CMD_BUF_SIZE];
+
+    if (sd->jump_handle) {
+        snprintf(cmd, sizeof(cmd),
+                 "delete rule inet %s filter handle %" PRIu64,
+                 TABLE_NAME, sd->jump_handle);
+        (void)nft_run_cmd_from_buffer(ctx, cmd);
+    }
+
+    snprintf(cmd, sizeof(cmd),
+             "flush chain inet %s %s\n"
+             "delete chain inet %s %s\n"
+             "delete set inet %s %s\n"
+             "delete set inet %s %s\n"
+             "delete set inet %s %s",
+             TABLE_NAME, sd->chain_name,
+             TABLE_NAME, sd->chain_name,
+             TABLE_NAME, sd->set_v4,
+             TABLE_NAME, sd->set_v6,
+             TABLE_NAME, sd->set_cg);
+    (void)nft_run_cmd_from_buffer(ctx, cmd);
+}
+
 int nft_handler_setup(pam_handle_t *pamh, const char *user,
                       authnft_session_t *sd) {
     struct nft_ctx *ctx;
@@ -344,6 +382,9 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         const char *err_msg = nft_ctx_get_error_buffer(ctx);
         pam_syslog(pamh, LOG_ERR, "authnft: jump rule failed: %s", err_msg);
         nft_ctx_unbuffer_output(ctx);
+        /* Roll back call 1 state. jump_handle is still 0 so the
+         * partial cleanup skips the rule-delete branch correctly. */
+        nft_partial_cleanup(ctx, sd);
         nft_ctx_free(ctx);
         return PAM_SERVICE_ERR;
     }
@@ -355,6 +396,10 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         pam_syslog(pamh, LOG_ERR,
                    "authnft: could not parse jump rule handle from nft output");
         nft_ctx_unbuffer_output(ctx);
+        /* Roll back call 1 state. The jump rule was committed (call 2
+         * succeeded) but we never captured its handle, so it leaks
+         * here — see comment on nft_partial_cleanup. */
+        nft_partial_cleanup(ctx, sd);
         nft_ctx_free(ctx);
         return PAM_SERVICE_ERR;
     }
@@ -389,6 +434,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
     if (!frag_buf) {
         pam_syslog(pamh, LOG_ERR,
                    "authnft: could not read fragment %s", user_conf_path);
+        nft_partial_cleanup(ctx, sd);
         nft_ctx_free(ctx);
         return PAM_AUTH_ERR;
     }
@@ -414,6 +460,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         pam_syslog(pamh, LOG_ERR,
                    "authnft: placeholder substitution failed for %s",
                    user_conf_path);
+        nft_partial_cleanup(ctx, sd);
         nft_ctx_free(ctx);
         return PAM_SERVICE_ERR;
     }
@@ -425,6 +472,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
                          "authnft: syntax error in %s: %s", user_conf_path, err_msg);
         pam_error(pamh, "authnft: fragment syntax error — check /var/log/auth.log");
         free(subst_buf);
+        nft_partial_cleanup(ctx, sd);
         nft_ctx_free(ctx);
         return PAM_AUTH_ERR;
     }

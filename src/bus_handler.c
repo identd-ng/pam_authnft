@@ -120,3 +120,49 @@ int bus_handler_start(pam_handle_t *pamh, const char *user, int session_pid) {
     sd_bus_unref(bus);
     return 0;
 }
+
+int bus_handler_stop(pam_handle_t *pamh, const char *user, int session_pid) {
+    sd_bus *bus = NULL;
+    sd_bus_error error = SD_BUS_ERROR_NULL;
+    char unit_name[UNIT_BUF_SIZE];
+    int r;
+
+    if (sd_bus_open_system(&bus) < 0) {
+        if (pamh) pam_syslog(pamh, LOG_WARNING,
+                             "authnft: bus_handler_stop: bus open failed: %m");
+        return -1;
+    }
+
+    snprintf(unit_name, sizeof(unit_name),
+             "authnft-%s-%d.scope", user, session_pid);
+    DEBUG_PRINT("bus: StopUnit %s", unit_name);
+
+    r = sd_bus_call_method(bus,
+                           "org.freedesktop.systemd1",
+                           "/org/freedesktop/systemd1",
+                           "org.freedesktop.systemd1.Manager",
+                           "StopUnit",
+                           &error,
+                           NULL,
+                           "ss",
+                           unit_name,
+                           "fail");
+
+    /* Tolerate "unit not found" — the scope may have been reaped between
+     * the StartTransientUnit success and this rollback (e.g., the session
+     * PID exited). Anything else is an unexpected error worth logging. */
+    if (r < 0 && error.name &&
+        (strcmp(error.name, "org.freedesktop.systemd1.NoSuchUnit") == 0 ||
+         strcmp(error.name, "org.freedesktop.DBus.Error.UnitNotLoaded") == 0)) {
+        DEBUG_PRINT("bus: scope %s already gone", unit_name);
+        r = 0;
+    } else if (r < 0 && pamh) {
+        pam_syslog(pamh, LOG_WARNING,
+                   "authnft: bus_handler_stop(%s) failed: %s",
+                   unit_name, error.message ? error.message : strerror(-r));
+    }
+
+    sd_bus_error_free(&error);
+    sd_bus_unref(bus);
+    return r < 0 ? -1 : 0;
+}
