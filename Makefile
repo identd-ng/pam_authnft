@@ -187,6 +187,22 @@ trace-container:
 	@mkdir -p $(RESULT_DIR) && echo trace > $(RESULT_DIR)/workflow
 	$(RUN_CONTAINER)
 
+# Software Bill of Materials. On-demand generation via syft, which
+# parses the .so's DT_NEEDED entries plus build metadata. Output is
+# CycloneDX 1.5 JSON suitable for upload alongside a GitHub release
+# artefact. Hand-curated dependency inventory (license, version
+# floors, security feeds) lives at docs/THIRD_PARTY.md and is the
+# authoritative document for OSTIF compliance §5.
+SBOM = pam_authnft.cdx.json
+
+sbom: $(SBOM)
+
+$(SBOM): $(TARGET)
+	@command -v syft >/dev/null || { echo "syft required: https://github.com/anchore/syft"; exit 1; }
+	syft scan file:$(TARGET) -o cyclonedx-json=$(SBOM)
+	@echo "SBOM written to $(SBOM)"
+	@echo "(human-readable dependency inventory: docs/THIRD_PARTY.md)"
+
 install: $(TARGET) install-tmpfiles
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
@@ -366,7 +382,7 @@ fuzz-coverage:
 # committed artefact, browsable without rebuilding. Re-run
 # `make fuzz-coverage` to refresh.
 clean:
-	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) $(ORACLE_RUNNER) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) $(ORACLE_RUNNER) $(SBOM) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -374,6 +390,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean fuzz fuzz-coverage test test-oracle test-symbols test-integration test-container \
+.PHONY: all debug clean fuzz fuzz-coverage sbom test test-oracle test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
         distclean install install-tmpfiles uninstall man install-man
