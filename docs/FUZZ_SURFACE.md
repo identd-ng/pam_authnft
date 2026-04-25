@@ -128,6 +128,27 @@ same bug in the other.
   vice-versa) — caught when the oracle's verbatim-preservation
   policy disagrees with C's actual behavior.
 
+### Property-based extension (Phase 4.2)
+
+`tests/oracle/properties.py` runs after the differential pass and
+checks **per-function invariants** on both implementations:
+
+| Function | Property |
+|---|---|
+| `util_normalize_ip` | idempotence — `f(f(x).out) == f(x).out` |
+| `validate_cgroup_path` | round-trip — re-prefixing the leading-slash-stripped output makes the function accept and produce the same output |
+| `keyring_sanitize` | idempotence — sanitizing already-sanitized output is a no-op |
+| `corr_sanitize_copy` | idempotence |
+
+The property tests run separately on C and on Python (8
+function × runner pairs total). Where the differential oracle
+catches "C and Python disagree on a single input", the property
+tests catch "the function disagrees with itself" — a canonical
+form that drifts on re-application, or output that the function
+rejects when fed back as input.
+
+Both pass cleanly on the current 286-input corpus.
+
 ### What this does NOT catch
 
 - Bugs in functions too large or too stateful to re-implement

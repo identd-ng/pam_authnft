@@ -66,3 +66,10 @@ if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
 printf "\n${GREEN}[ORACLE PASS]${RESET} %d function(s) cross-validated\n" "$PASS"
+
+# Phase 4.2: idempotence + round-trip property checks. The differential
+# oracle above catches "C and Python disagree". The property pass below
+# catches "the function disagrees with itself" — output rejected by
+# the same function, or a canonical form that drifts on re-application.
+echo
+python3 "$SCRIPT_DIR/properties.py"
