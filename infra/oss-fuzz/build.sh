@@ -72,3 +72,18 @@ $CC $CFLAGS $COMMON $PKGCF \
     fuzz/fuzz_correlation_capture.c "$WORK"/obj/*.o \
     $LIB_FUZZING_ENGINE $PKGLD \
     -o "$OUT/fuzz_correlation_capture"
+
+# fuzz_cgroup_path: depth-invariant validator for cgroup paths returned
+# by sd_pid_get_cgroup. Pure string parser; off-by-one bugs here either
+# silently deny every authnft session or accept malformed paths.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_cgroup_path.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_cgroup_path"
+
+# fuzz_socket_inode: parse_socket_inode (regression guard for a thin
+# sscanf wrapper used during /proc/<pid>/fd traversal).
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_socket_inode.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_socket_inode"

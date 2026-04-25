@@ -210,7 +210,9 @@ FUZZ_TARGETS = $(FUZZ_OUT)/fuzz_username \
                $(FUZZ_OUT)/fuzz_substitute_placeholders \
                $(FUZZ_OUT)/fuzz_netlink_diag \
                $(FUZZ_OUT)/fuzz_keyring_sanitize \
-               $(FUZZ_OUT)/fuzz_correlation_capture
+               $(FUZZ_OUT)/fuzz_correlation_capture \
+               $(FUZZ_OUT)/fuzz_cgroup_path \
+               $(FUZZ_OUT)/fuzz_socket_inode
 
 FUZZ_SRC_OBJS = $(patsubst src/%.c,$(FUZZ_OUT)/obj/%.o,$(wildcard src/*.c))
 

@@ -35,6 +35,21 @@
 
 #define RECV_BUF   (8 * 1024)
 
+/* Parse a /proc/<pid>/fd/<n> readlink target like "socket:[12345]" into
+ * an inode number. Returns 1 on success, 0 if the target doesn't match
+ * the expected format. Exposed (non-static) under FUZZ_BUILD so
+ * fuzz_socket_inode can target it. */
+#ifndef FUZZ_BUILD
+static
+#endif
+int parse_socket_inode(const char *target, unsigned long *out_inode) {
+    if (!target || !out_inode) return 0;
+    unsigned long ino;
+    if (sscanf(target, "socket:[%lu]", &ino) != 1) return 0;
+    *out_inode = ino;
+    return 1;
+}
+
 /* Collect socket inodes held by `pid` by readlink-ing each entry under
  * /proc/<pid>/fd. Returns the count or -1 on failure. On exit,
  * *truncated is set to 1 if at least one socket inode was observed
@@ -61,9 +76,8 @@ static int collect_socket_inodes(pid_t pid, ino_t *inodes, size_t cap,
         if (n <= 0) continue;
         target[n] = '\0';
 
-        /* "socket:[12345]" */
         unsigned long ino;
-        if (sscanf(target, "socket:[%lu]", &ino) != 1) continue;
+        if (!parse_socket_inode(target, &ino)) continue;
 
         if ((size_t)count >= cap) {
             *truncated = 1;

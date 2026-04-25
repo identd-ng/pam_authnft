@@ -75,6 +75,22 @@ jobs:
             -artifact_prefix=fuzz/crashes/correlation_capture- \
             fuzz/corpus/correlation_capture/
 
+      - name: Fuzz validate_cgroup_path (60s)
+        run: |
+          mkdir -p fuzz/corpus/cgroup_path fuzz/crashes
+          ./fuzz/out/fuzz_cgroup_path \
+            -max_total_time=60 \
+            -artifact_prefix=fuzz/crashes/cgroup_path- \
+            fuzz/corpus/cgroup_path/
+
+      - name: Fuzz parse_socket_inode (60s)
+        run: |
+          mkdir -p fuzz/corpus/socket_inode fuzz/crashes
+          ./fuzz/out/fuzz_socket_inode \
+            -max_total_time=60 \
+            -artifact_prefix=fuzz/crashes/socket_inode- \
+            fuzz/corpus/socket_inode/
+
       - name: Upload crash artifacts
         uses: actions/upload-artifact@v4
         if: failure()
