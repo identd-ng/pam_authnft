@@ -346,45 +346,9 @@ make test-integration-container  # pamtester end-to-end + valgrind
 make trace-container             # seccomp allowlist trace
 ```
 
-The integration test creates and cleans up its own test user and group
-automatically. Set `AUTHNFT_TEST_USER` to override the test account name
-(default: `authnft-test`).
-
-| # | What is tested |
-|---|----------------|
-| 0 | Exported symbols are exactly `pam_sm_open_session` and `pam_sm_close_session` |
-| 1 | `util_is_valid_username` rejects path traversal and shell metacharacters |
-| 2 | A syscall outside the allowlist triggers SIGSYS |
-| 3 | An allowlisted syscall (`close`) returns normally through the sandbox |
-| 4 | libnftables dry-run API accepts well-formed syntax |
-| 5 | `util_get_cgroup_path` rejects a non-authnft.slice PID (depth invariant enforcement) |
-| 6 | Compiled `.so` has full RELRO, canary, PIE, CFI (via `checksec`) |
-| 7 | Fragment load (skipped in unit tests — covered by integration 10.2/10.11) |
-| 8 | `util_normalize_ip` accepts v4/v6 literals, strips IPv6 zone suffix, rejects hostnames and junk |
-| 9 | `peer_lookup_tcp` resolves the remote address of a localhost TCP pair via `NETLINK_SOCK_DIAG` |
-| 10 | Kernel-keyring tag round-trip: `add_key` → `keyring_read_serial` with full payload sanitization |
-| 10.1 | Integration: group member denied when fragment is missing |
-| 10.2 | Integration: group member allowed when a valid fragment exists |
-| 10.3 | Integration: root bypasses the module entirely |
-| 10.4 | Integration: fragment rejected when not root-owned |
-| 10.5 | Integration: fragment rejected when world-writable |
-| 10.6 | Integration: per-session chain/sets cleaned up at close via persisted session data |
-| 10.7 | Integration: close_session best-effort when no prior open state |
-| 10.8 | Integration: multi-fragment composition via nftables `include` |
-| 10.9 | Integration: `/run/authnft/sessions/` JSON file lifecycle + schema + perms |
-| 10.10 | Integration: `AUTHNFT_EVENT=open/close` emitted with shared correlation token |
-| 10.11 | Integration: adversarial packet classification — cgroup match fires on allowed source, does not fire on disallowed source |
-| 10.12 | Integration: Class A/B socket-scope invariant — pre-scope socket does not match after task migration |
-| 10.13 | Integration: cross-session isolation — user A's deny rule does not affect user B's traffic (per-session set boundary) |
-| — | Integration: no memory errors or leaks under Valgrind memcheck |
-
-### CI matrix
-
-Every push and pull request runs: GCC + Clang build matrix, cppcheck static
-analysis, CodeQL semantic analysis, ASan/UBSan sanitizer builds, and weekly
-Coverity Scan. The seccomp allowlist in `src/sandbox.c` is `SCMP_ACT_KILL`
-default with `PR_SET_NO_NEW_PRIVS`; see
-[docs/CONTRIBUTING.txt](docs/CONTRIBUTING.txt) for the derivation procedure.
+For the unit + integration stage matrix (stages 0–10 and 10.1–10.13)
+and the CI gate inventory, see
+[docs/CONTRIBUTING.txt](docs/CONTRIBUTING.txt) § Tests.
 
 ## Limitations
 
@@ -441,7 +405,8 @@ welcome. The areas where help is most wanted:
 
 Before opening a pull request, read
 [docs/CONTRIBUTING.txt](docs/CONTRIBUTING.txt) — it documents the
-invariants that must be preserved and the seccomp allowlist derivation
+invariants that must be preserved, the test stage matrix, the CI
+gates a PR must clear, and the seccomp allowlist derivation
 procedure.
 
 Report security issues privately via [GitHub Security

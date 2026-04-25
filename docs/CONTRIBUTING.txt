@@ -211,6 +211,75 @@ Tests
   behaviour is representative of a class of regression you would
   actually want caught.
 
+The integration test creates and cleans up its own test user and
+group automatically. Set `AUTHNFT_TEST_USER` to override the test
+account name (default: `authnft-test`).
+
+Stage matrix
+------------
+
+Unit suite (`tests/test_suite.c`):
+
+  0     Exported symbols are exactly pam_sm_open_session and
+        pam_sm_close_session
+  1     util_is_valid_username rejects path traversal and shell
+        metacharacters
+  2     A syscall outside the allowlist triggers SIGSYS
+  3     An allowlisted syscall (close) returns normally through the
+        sandbox
+  4     libnftables dry-run API accepts well-formed syntax
+  5     util_get_cgroup_path rejects a non-authnft.slice PID (depth
+        invariant enforcement)
+  6     Compiled .so has full RELRO, canary, PIE, CFI (via checksec)
+  7     Fragment load (skipped in unit tests — covered by integration
+        10.2 / 10.11)
+  8     util_normalize_ip accepts v4/v6 literals, strips IPv6 zone
+        suffix, rejects hostnames and junk
+  9     peer_lookup_tcp resolves the remote address of a localhost TCP
+        pair via NETLINK_SOCK_DIAG
+  10    Kernel-keyring tag round-trip: add_key → keyring_read_serial
+        with full payload sanitization
+
+Integration suite (`tests/integration_test.sh`):
+
+  10.1  Group member denied when fragment is missing
+  10.2  Group member allowed when a valid fragment exists
+  10.3  Root bypasses the module entirely
+  10.4  Fragment rejected when not root-owned
+  10.5  Fragment rejected when world-writable
+  10.6  Per-session chain/sets cleaned up at close via persisted
+        session data
+  10.7  close_session best-effort when no prior open state
+  10.8  Multi-fragment composition via nftables `include`
+  10.9  /run/authnft/sessions/ JSON file lifecycle + schema + perms
+  10.10 AUTHNFT_EVENT=open/close emitted with shared correlation token
+  10.11 Adversarial packet classification — cgroup match fires on
+        allowed source, does not fire on disallowed source
+  10.12 Class A/B socket-scope invariant — pre-scope socket does not
+        match after task migration
+  10.13 Cross-session isolation — user A's deny rule does not affect
+        user B's traffic (per-session set boundary)
+  —     No memory errors or leaks under Valgrind memcheck
+
+
+CI gates
+--------
+
+Every push and pull request triggers:
+
+  - GCC + Clang build matrix
+  - cppcheck static analysis
+  - CodeQL semantic analysis
+  - ASan / UBSan sanitizer builds
+  - libFuzzer harnesses (CIFuzz workflow, 60s budget per harness)
+  - Weekly Coverity Scan
+  - Nightly sustained fuzz cron (.github/workflows/fuzz-nightly.yml)
+    — 30 min × 8 harnesses against the checked-in corpus
+
+The seccomp allowlist in `src/sandbox.c` is `SCMP_ACT_KILL` default
+with `PR_SET_NO_NEW_PRIVS`; see "Regenerating the seccomp allowlist"
+below for the derivation procedure.
+
 
 Invariant guards
 ----------------
