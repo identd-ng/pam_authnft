@@ -4,6 +4,7 @@
 [![cppcheck](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/cppcheck.yml)
 [![CodeQL](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/codeql.yml)
 [![sanitizers](https://github.com/identd-ng/pam_authnft/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/sanitizers.yml)
+[![CIFuzz](https://github.com/identd-ng/pam_authnft/actions/workflows/cifuzz.yml/badge.svg)](https://github.com/identd-ng/pam_authnft/actions/workflows/cifuzz.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12496/badge?v=passing)](https://www.bestpractices.dev/projects/12496)
 [![Coverity Scan](https://scan.coverity.com/projects/pam_authnft/badge.svg)](https://scan.coverity.com/projects/pam_authnft)
 [![Language: C](https://img.shields.io/badge/language-C-blue.svg)](https://en.wikipedia.org/wiki/C_(programming_language))
@@ -415,9 +416,11 @@ JSON schema (`v=2`, §5.6), and the structured audit event fields (§6.2).
 **May change before 1.0** — `claims_env` wire format details,
 `rhost_policy=kernel` NETLINK internals, `authnft.slice` shipped defaults.
 
-**Planned** — CIFuzz / OSS-Fuzz integration, fragment linter (wraps
-libnftables dry-run), pluggable fragment sources, packaging for Arch
-(AUR) and Debian. See [docs/TODO.txt](docs/TODO.txt) for the full list.
+**Planned** — OSS-Fuzz registration (project files staged at
+[infra/oss-fuzz/](infra/oss-fuzz/), submission gated on project age),
+fragment linter (wraps libnftables dry-run), pluggable fragment
+sources, packaging for Arch (AUR) and Debian. See
+[docs/TODO.txt](docs/TODO.txt) for the full list.
 
 ## Contributing
 
