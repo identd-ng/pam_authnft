@@ -203,6 +203,26 @@ $(SBOM): $(TARGET)
 	@echo "SBOM written to $(SBOM)"
 	@echo "(human-readable dependency inventory: docs/THIRD_PARTY.md)"
 
+# Reproducibility check — build pam_authnft.so twice on this host and
+# verify the artefact is bit-identical. OSTIF best-practices §3
+# ("reproducible builds where feasible") + supply-chain assurance: a
+# known-good binary hash means a downstream packager can verify their
+# build matches the upstream source without trusting the build
+# infrastructure. Cross-machine reproducibility additionally requires
+# identical toolchain (compiler version, libc, binutils) — see
+# docs/REPRODUCIBLE_BUILDS.md.
+reproducibility-check:
+	@h1=$$($(MAKE) clean >/dev/null && $(MAKE) >/dev/null && sha256sum $(TARGET) | awk '{print $$1}'); \
+	h2=$$($(MAKE) clean >/dev/null && $(MAKE) >/dev/null && sha256sum $(TARGET) | awk '{print $$1}'); \
+	if [ "$$h1" = "$$h2" ]; then \
+	    echo "[PASS] reproducible same-machine: $$h1"; \
+	else \
+	    echo "[FAIL] non-reproducible:"; \
+	    echo "  build 1: $$h1"; \
+	    echo "  build 2: $$h2"; \
+	    exit 1; \
+	fi
+
 install: $(TARGET) install-tmpfiles
 	sudo mkdir -p /etc/authnft/users
 	sudo install -m 755 $(TARGET) $(PAM_DIR)/$(TARGET)
@@ -390,6 +410,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean fuzz fuzz-coverage sbom test test-oracle test-symbols test-integration test-container \
+.PHONY: all debug clean fuzz fuzz-coverage reproducibility-check sbom test test-oracle test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
         distclean install install-tmpfiles uninstall man install-man
