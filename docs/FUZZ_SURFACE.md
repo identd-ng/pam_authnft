@@ -87,8 +87,53 @@ in this document, regardless of duration:
   tests on each distro target.
 - **Logic bugs that don't violate stated invariants.** A function that
   returns wrong-but-plausible answers will pass property-assertion
-  fuzz forever. Defense: differential testing against an oracle (see
-  plan §D.1).
+  fuzz forever. Defense: differential testing against an oracle —
+  see "Differential oracles" below.
+
+---
+
+## Differential oracles
+
+Every parser whose semantics can be re-implemented in Python with
+stdlib primitives gets a second implementation under
+`tests/oracle/oracle.py`. The C runner at
+`tests/oracle/oracle_runner.c` reads inputs from stdin, calls the C
+function, and prints results in a parser-agnostic format. The Python
+oracle reads the same inputs and prints results in the same format.
+`tests/oracle/run.sh` (driven by `make test-oracle`, also wired into
+`make test`) feeds a curated input set through both and diffs.
+
+Disagreement = logic bug. The two implementations are written
+independently from the spec — a bug in one is unlikely to be the
+same bug in the other.
+
+### Oracle status
+
+| Function | Oracle | Inputs | Status |
+|---|---|---|---|
+| `util_is_valid_username` | regex on `[A-Za-z0-9._-]` + length cap | 48 | ✅ |
+| `util_normalize_ip` | `ipaddress` module + verbatim-form preservation | 88 | ✅ |
+
+### What this catches that fuzz does not
+
+- Wrong-but-plausible accept/reject decisions on edge inputs that
+  don't trigger memory-safety errors.
+- Algorithmic divergences between parsers (e.g., `inet_pton` vs
+  Python's `ipaddress` module): if either accepts a form the other
+  rejects, the oracle flags it.
+- Forms preserved verbatim by C but normalized by Python (or
+  vice-versa) — caught when the oracle's verbatim-preservation
+  policy disagrees with C's actual behavior.
+
+### What this does NOT catch
+
+- Bugs in functions too large or too stateful to re-implement
+  (e.g., the netlink walker, fragment loader). Those rely on
+  property-assertion fuzz instead.
+- Bugs that BOTH implementations get wrong the same way — possible
+  if both are written from the same flawed spec text. Mitigation:
+  read the C against the spec, write Python from the spec, don't
+  cross-reference.
 
 ---
 
