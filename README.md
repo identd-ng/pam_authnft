@@ -457,6 +457,8 @@ Advisories](https://github.com/identd-ng/pam_authnft/security/advisories)
 | [docs/CONTRIBUTING.txt](docs/CONTRIBUTING.txt) | Build, layout, invariants, style, test procedures, seccomp allowlist derivation |
 | [docs/TODO.txt](docs/TODO.txt) | Near-term, medium-term, and deferred work items |
 | [docs/DOC_CHECKLIST.txt](docs/DOC_CHECKLIST.txt) | Documentation update matrix by change type |
+| [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md) | Authoritative dependency inventory: licenses, version floors, security feeds |
+| [docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md) | Internal runbook for handling a security report (the public policy is [SECURITY.md](SECURITY.md)) |
 | [SECURITY.md](SECURITY.md) | Vulnerability scope and reporting procedure |
 
 ## License

@@ -40,9 +40,31 @@ stack (`/etc/pam.d/<service>`) in use.
 Public issues and pull requests are not the right channel for vulnerability
 reports.
 
-## Expectations
+## Response timeline
 
-Given the alpha status and single-maintainer cadence, no fixed response SLA
-is offered. Reports are acknowledged when read and addressed as priorities
-allow. Coordinated disclosure is welcome; please agree a timeline before
-publishing.
+Given the alpha status and single-maintainer cadence, the targets below
+are best-effort and will firm up as the project matures. They are stated
+explicitly so reporters know what to expect and when to escalate.
+
+| Step | Target | Notes |
+|---|---|---|
+| Acknowledgment | within **5 business days** of the report being read | acknowledgment confirms receipt and that triage has begun; it is not a confirmation that the issue is in-scope or reproducible |
+| Initial triage (in-scope, reproducible, severity-rated) | within **10 business days** | a report flagged out-of-scope is closed at this step with reasoning |
+| Coordinated disclosure window | **90 days** from acknowledgment unless mutually negotiated | shorter if a fix ships sooner, longer if the reporter and maintainer agree (e.g., for downstream packagers) |
+| Public advisory | simultaneous with the fix release | published as a GitHub Security Advisory + CVE if assigned, with credit to the reporter unless they request otherwise |
+| Fix backports | as feasible to released versions | alpha series; long-term support branches do not exist yet |
+
+Reporters who escalate during the window (e.g., observe an in-the-wild
+exploit, or believe the issue is being exploited against them) MAY shorten
+the disclosure window unilaterally; the maintainer will rush a fix in
+parallel.
+
+Reports that are not acknowledged within 14 days SHOULD be re-sent or
+escalated via the email contact in `.well-known/security.txt`.
+
+## Incident response runbook
+
+The internal procedure followed for each report is documented in
+[docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md). It exists so
+that a maintainer-of-the-day handling their first incident has a clear
+path through triage → fix → disclosure → post-mortem.
