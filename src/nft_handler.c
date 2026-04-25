@@ -293,6 +293,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
     if (stat(user_conf_path, &st) != 0) {
         (void)pam_syslog(pamh, LOG_ERR,
                          "authnft: missing fragment for %s at %s", user, user_conf_path);
+        authnft_audit_fragment_reject(user, "missing", user_conf_path);
         snprintf(display_msg, sizeof(display_msg),
                  "authnft: no rule fragment at %s — add one and reconnect.",
                  user_conf_path);
@@ -304,6 +305,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         (void)pam_syslog(pamh, LOG_ERR,
                          "authnft: insecure permissions on %s (uid=%d mode=%o)",
                          user_conf_path, st.st_uid, st.st_mode);
+        authnft_audit_fragment_reject(user, "perms", user_conf_path);
         pam_error(pamh, "authnft: fragment %s must be root-owned and not world-writable.",
                   user_conf_path);
         return PAM_AUTH_ERR;
@@ -311,6 +313,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
 
     /* Content validation: verb scan, include path check, reserved defines. */
     if (validate_fragment_content(pamh, user_conf_path) < 0) {
+        authnft_audit_fragment_reject(user, "content", user_conf_path);
         pam_error(pamh, "authnft: fragment %s rejected by content validator.",
                   user_conf_path);
         return PAM_AUTH_ERR;
@@ -495,6 +498,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         const char *err_msg = nft_ctx_get_error_buffer(ctx);
         (void)pam_syslog(pamh, LOG_ERR,
                          "authnft: syntax error in %s: %s", user_conf_path, err_msg);
+        authnft_audit_fragment_reject(user, "nft-syntax", user_conf_path);
         pam_error(pamh, "authnft: fragment syntax error — check /var/log/auth.log");
         free(subst_buf);
         nft_partial_cleanup(ctx, sd);

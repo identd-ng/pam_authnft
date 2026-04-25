@@ -50,8 +50,11 @@ Medium-term
 [x] Multi-fragment composition — documented; nftables `include`
     resolves transitively so no code change was needed (see
     docs/INTEGRATIONS.txt §4.6; integration test 10.8).
-[ ] Optional audit subsystem hook on fragment rejection — currently
-    logged via pam_syslog only. Consider audit(7) AUDIT_USER_ERR.
+[x] audit(7) hook on fragment rejection — every reject path now
+    emits AUDIT_USER_ERR via libaudit's audit_log_user_message().
+    Reason tags: missing | perms | content | nft-syntax. Field
+    schema in docs/INTEGRATIONS.txt §6.2.7. The pam_syslog channel
+    stays in place; audit is additive.
 [ ] Pluggable fragment sources (not just /etc/authnft/users/<name>) —
     e.g., a fragment-generator socket, /etc/authnft/users.d/ overlays,
     or policy-engine fetch with atomic rename on disk.

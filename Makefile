@@ -12,7 +12,7 @@ TEST_USER  ?= authnft-test
 TMPFILES_DIR = /usr/lib/tmpfiles.d
 CFLAGS     =
 
-LIBS      = libnftables libseccomp libsystemd pam libcap
+LIBS      = libnftables libseccomp libsystemd pam libcap audit
 
 HARDENING = -fstack-clash-protection \
             -fcf-protection \
@@ -31,7 +31,8 @@ TARGET   = pam_authnft.so
 TEST_BIN = authnft_test
 OBJ_DIR  = obj
 
-OBJS = $(OBJ_DIR)/bus_handler.o   \
+OBJS = $(OBJ_DIR)/audit.o         \
+       $(OBJ_DIR)/bus_handler.o   \
        $(OBJ_DIR)/event.o         \
        $(OBJ_DIR)/keyring.o       \
        $(OBJ_DIR)/nft_handler.o   \

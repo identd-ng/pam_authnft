@@ -15,8 +15,8 @@
 cd "$SRC/pam_authnft"
 
 COMMON="-Iinclude -D_GNU_SOURCE -DFUZZ_BUILD"
-PKGCF="$(pkg-config --cflags libnftables libseccomp libsystemd pam libcap)"
-PKGLD="$(pkg-config --libs   libnftables libseccomp libsystemd pam libcap)"
+PKGCF="$(pkg-config --cflags libnftables libseccomp libsystemd pam libcap audit)"
+PKGLD="$(pkg-config --libs   libnftables libseccomp libsystemd pam libcap audit)"
 
 mkdir -p "$WORK/obj"
 

@@ -709,6 +709,53 @@ Consumers that need a complete audit trail SHOULD subscribe to
 both the structured AUTHNFT_EVENT= entries (for happy-path session
 lifecycle) and the "authnft:" prose (for error conditions).
 
+6.2.7 Linux audit subsystem (AUDIT_USER_ERR)
+
+Status: stable (operation tag, reason vocabulary)
+
+Every fragment-rejection path in pam_authnft also emits a parallel
+record via the Linux audit subsystem (audit(7)), routed through
+libaudit's audit_log_user_message() at type AUDIT_USER_ERR (1109).
+The pam_syslog(3) channel above stays in place; the audit channel
+is additive, intended for SOC pipelines that scrape
+/var/log/audit/audit.log instead of /var/log/auth.log.
+
+The kernel-emitted record looks like (one line, wrapped here):
+
+    type=USER_ERR msg=audit(1759334400.123:42): pid=1234 uid=0
+        auid=1000 ses=3 subj=... msg='op=authnft-fragment-reject
+        reason=missing user="alice"
+        fragment="/etc/authnft/users/alice"
+        exe="/usr/sbin/sshd" hostname=? addr=? terminal=?
+        res=failed'
+
+The application-supplied fields inside msg='...':
+
+    op=authnft-fragment-reject  fixed; SIEM rules can string-match
+    reason=<short-id>           one of:
+        missing      stat() on the fragment failed
+        perms        not root-owned, or world-writable
+        content      verb scan / include path validator rejected
+        nft-syntax   libnftables rejected at load time
+    user="<pam_user>"           passes util_is_valid_username,
+                                so [A-Za-z0-9._-] only — no audit
+                                escaping concerns.
+    fragment="<rules-dir-path>" /etc/authnft/users/<user>
+
+`auid` (audit-uid) is set by an upstream PAM module (typically
+pam_loginuid before pam_authnft); pam_authnft itself does not set it.
+The user= field in msg='...' is the application's view of the
+session user, which may differ if a misconfigured PAM stack runs
+pam_authnft outside the user's session.
+
+Producer/consumer notes:
+  - Failure to open the audit netlink (subsystem disabled, missing
+    CAP_AUDIT_WRITE) is non-fatal: the rejection still propagates as
+    PAM_AUTH_ERR. Consumers SHOULD NOT rely on audit emission for
+    correctness — only for observability.
+  - The seccomp allowlist already covers the syscalls libaudit uses
+    (socket, sendto, sendmsg, close); no additional sandbox surface.
+
 6.3 Cgroup correlation
 
 The cgroup path embedded in the per-session sets

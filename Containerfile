@@ -40,6 +40,7 @@ RUN dnf -y install \
         systemd \
         systemd-devel \
         libcap-devel \
+        audit-libs-devel \
         pam-devel \
         pamtester \
         valgrind \
