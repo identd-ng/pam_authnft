@@ -113,6 +113,9 @@ same bug in the other.
 |---|---|---|---|
 | `util_is_valid_username` | regex on `[A-Za-z0-9._-]` + length cap | 48 | ✅ |
 | `util_normalize_ip` | `ipaddress` module + verbatim-form preservation | 88 | ✅ |
+| `validate_cgroup_path` | depth-invariant path parser (split + suffix check) | 43 | ✅ |
+| `keyring_sanitize` | bytewise filter against `[A-Za-z0-9_=,.:;/-]`; `_` substitution; `CLAIMS_TAG_MAX` cap; NUL terminates | 59 | ✅ |
+| `corr_sanitize_copy` | charwise filter against `[A-Za-z0-9_-.:]`; drop (not substitute); `CORRELATION_ID_MAX-1` cap | 48 | ✅ |
 
 ### What this catches that fuzz does not
 

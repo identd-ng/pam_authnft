@@ -1,0 +1,48 @@
+authnft-12345-678-abcd1234
+session.id.0001
+trace:abc-123
+user_42
+A
+1
+.
+:
+-
+_
+=
+;
+/
+,
+
+abc def
+ABC.abc-test_42:something
+authnft-1759334400-12345-deadbeef
+ABC.abc:test
+A_B-C.D:E
+0123456789
+ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ
+ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZX
+abc!def
+abc"def
+abc\def
+abc'def
+abc#def
+abc%def
+abc/def
+abc&def
+abc;def
+abc,def
+abc/def!--
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy0
+		tab
+ leading space
+trailing space
+mid space
+\\backslash
+//slashes
+foo	bar	baz
+%2Fencoded
+abc.def-ghi:jkl_mno
+authnft-x-y-z
+authnft@host
+caller-component:42
