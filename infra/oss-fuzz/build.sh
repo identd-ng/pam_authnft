@@ -50,3 +50,12 @@ $CC $CFLAGS $COMMON $PKGCF \
     fuzz/fuzz_substitute_placeholders.c "$WORK"/obj/*.o \
     $LIB_FUZZING_ENGINE $PKGLD \
     -o "$OUT/fuzz_substitute_placeholders"
+
+# fuzz_netlink_diag: exercises peer_parse_diag_chunk, the
+# NETLINK_SOCK_DIAG response walker (NLMSG_OK / inet_diag_msg cast).
+# Highest attacker-reachable parser in the module — kernel-supplied
+# bytes flow into hand-rolled length arithmetic.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_netlink_diag.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_netlink_diag"

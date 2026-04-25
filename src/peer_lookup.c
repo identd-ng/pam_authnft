@@ -104,6 +104,100 @@ static int send_diag_request(int fd, int family) {
     return sendmsg(fd, &m, 0) < 0 ? -1 : 0;
 }
 
+/*
+ * Pure parser: walk one netlink response buffer and look for a match.
+ * No I/O; takes bytes already in memory. Refactored out of
+ * scan_diag_reply so that fuzz_netlink_diag can target it directly.
+ *
+ * Returns:
+ *   1  non-loopback match written to out[out_sz]
+ *   0  NLMSG_DONE seen, no match (pending may have been populated)
+ *  -1  protocol error (NLMSG_ERROR or short payload)
+ *   2  buffer exhausted without DONE; caller should recv more
+ *
+ * `pending` is in/out: a loopback IP is held back here; if a later
+ * chunk produces a non-loopback match it wins, otherwise the caller
+ * promotes pending to out on DONE.
+ */
+#ifndef FUZZ_BUILD
+static
+#endif
+int peer_parse_diag_chunk(const void *buf, size_t len,
+                          const ino_t *inodes, int n_inodes,
+                          char *out, size_t out_sz,
+                          char *pending, size_t pending_sz) {
+    /* Manual walk rather than NLMSG_OK/NLMSG_NEXT: those macros use
+     * NLMSG_ALIGN-aware advancement but NLMSG_OK only validates
+     * nlmsg_len <= remaining (without alignment). A crafted nlmsg_len
+     * whose 4-byte-aligned size exceeds `remaining` slips past
+     * NLMSG_OK, then NLMSG_NEXT's `remaining -= align(nlmsg_len)`
+     * underflows the size_t, and the next iteration dereferences `nlh`
+     * past the buffer. Hand-rolled walk validates alignment too. */
+    const char *cur = (const char *)buf;
+    size_t remaining = len;
+
+    while (remaining >= sizeof(struct nlmsghdr)) {
+        const struct nlmsghdr *nlh = (const struct nlmsghdr *)cur;
+
+        if (nlh->nlmsg_len < sizeof(struct nlmsghdr) ||
+            nlh->nlmsg_len > remaining)
+            return -1;
+
+        if (nlh->nlmsg_type == NLMSG_DONE) {
+            if (pending[0] && out_sz > strlen(pending)) {
+                memcpy(out, pending, strlen(pending) + 1);
+                return 1;
+            }
+            return 0;
+        }
+        if (nlh->nlmsg_type == NLMSG_ERROR) return -1;
+
+        /* Payload must hold a full inet_diag_msg before we cast. */
+        if (nlh->nlmsg_len < NLMSG_LENGTH(sizeof(struct inet_diag_msg)))
+            return -1;
+
+        const struct inet_diag_msg *dm =
+            (const struct inet_diag_msg *)(cur + NLMSG_HDRLEN);
+
+        int owned = 0;
+        for (int i = 0; i < n_inodes; i++) {
+            if ((ino_t)dm->idiag_inode == inodes[i]) { owned = 1; break; }
+        }
+
+        if (owned) {
+            char tmp[IP_STR_MAX];
+            int matched_family = 0;
+            if (dm->idiag_family == AF_INET) {
+                if (inet_ntop(AF_INET, &dm->id.idiag_dst, tmp, sizeof(tmp)))
+                    matched_family = 1;
+            } else if (dm->idiag_family == AF_INET6) {
+                if (inet_ntop(AF_INET6, &dm->id.idiag_dst, tmp, sizeof(tmp)))
+                    matched_family = 1;
+            }
+
+            if (matched_family) {
+                int is_loop = (strncmp(tmp, "127.", 4) == 0) ||
+                              (strcmp(tmp, "::1") == 0);
+                if (is_loop) {
+                    if (!pending[0]) {
+                        size_t L = strlen(tmp);
+                        if (L < pending_sz) memcpy(pending, tmp, L + 1);
+                    }
+                } else if (out_sz > strlen(tmp)) {
+                    memcpy(out, tmp, strlen(tmp) + 1);
+                    return 1;
+                }
+            }
+        }
+
+        size_t aligned = NLMSG_ALIGN(nlh->nlmsg_len);
+        if (aligned > remaining) break;  /* clean exit on trailing padding */
+        cur += aligned;
+        remaining -= aligned;
+    }
+    return 2;
+}
+
 /* Scan dump responses, and when an entry's inode matches one we own,
  * format its remote address into out[out_sz]. Returns 1 on match, 0 if
  * the dump ended without a match, -1 on protocol error. Non-loopback
@@ -118,50 +212,11 @@ static int scan_diag_reply(int fd, const ino_t *inodes, int n_inodes,
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
         if (n <= 0) return -1;
 
-        for (struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
-             NLMSG_OK(nlh, (size_t)n);
-             nlh = NLMSG_NEXT(nlh, n)) {
-
-            if (nlh->nlmsg_type == NLMSG_DONE) {
-                if (pending[0] && out_sz > strlen(pending)) {
-                    memcpy(out, pending, strlen(pending) + 1);
-                    return 1;
-                }
-                return 0;
-            }
-            if (nlh->nlmsg_type == NLMSG_ERROR) return -1;
-
-            const struct inet_diag_msg *dm = NLMSG_DATA(nlh);
-
-            int owned = 0;
-            for (int i = 0; i < n_inodes; i++) {
-                if ((ino_t)dm->idiag_inode == inodes[i]) { owned = 1; break; }
-            }
-            if (!owned) continue;
-
-            char tmp[IP_STR_MAX];
-            if (dm->idiag_family == AF_INET) {
-                if (!inet_ntop(AF_INET, &dm->id.idiag_dst, tmp, sizeof(tmp)))
-                    continue;
-            } else if (dm->idiag_family == AF_INET6) {
-                if (!inet_ntop(AF_INET6, &dm->id.idiag_dst, tmp, sizeof(tmp)))
-                    continue;
-            } else continue;
-
-            int is_loop = (strncmp(tmp, "127.", 4) == 0) ||
-                          (strcmp(tmp, "::1") == 0);
-            if (is_loop) {
-                if (!pending[0]) {
-                    size_t L = strlen(tmp);
-                    if (L < sizeof(pending)) memcpy(pending, tmp, L + 1);
-                }
-                continue;
-            }
-            if (out_sz > strlen(tmp)) {
-                memcpy(out, tmp, strlen(tmp) + 1);
-                return 1;
-            }
-        }
+        int rc = peer_parse_diag_chunk(buf, (size_t)n,
+                                        inodes, n_inodes,
+                                        out, out_sz,
+                                        pending, sizeof(pending));
+        if (rc != 2) return rc;
     }
 }
 

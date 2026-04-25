@@ -37,7 +37,7 @@ bugs hide.
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| netlink walker in `peer_lookup_tcp` | `NETLINK_SOCK_DIAG` reply | semi-hostile (any CAP_NET_ADMIN process) | 🟠 ❌ **High** | — | Hand-rolled NLA walker. Highest-payoff harness in the codebase |
+| `peer_parse_diag_chunk` (extracted from `peer_lookup_tcp`) | `NETLINK_SOCK_DIAG` reply | semi-hostile (any CAP_NET_ADMIN process) | ✅ | `fuzz_netlink_diag` | 100% region / 100% line, 89.13% branch. Hand-rolled walk over `nlmsghdr` headers + `inet_diag_msg` cast. **Found a heap-buffer-overflow on first run** — see "Bugs found" |
 | `socket:[NNNN]` parser in `peer_lookup_tcp` | `/proc/<pid>/fd/N` symlink | trusted | 🟠 ❌ Med | — | Integer parse, embedded NUL, overflow |
 | `keyring_read_serial` payload sanitizer | `keyctl(KEYCTL_READ)` | semi-trusted (producer trusted, consumer must defend) | 🟠 ❌ Med | — | printable-ASCII filter; truncation, journal-field-confusing chars |
 | `util_get_cgroup_path` invariant | `sd_pid_get_cgroup` return | trusted | ❌ Med | — | Depth/prefix validator; rejection paths matter |
@@ -117,10 +117,12 @@ the case for fuzzing self-evident.
 |---|---|---|---|
 | `fuzz_substitute_placeholders` | 1-byte heap-buffer-overflow at `nft_handler.c:208` (terminator write). Triggered when a placeholder expansion pushes `wi` to `max_expand-1` and is followed by an unmatched byte; the unmatched-byte path had no bounds check, advancing `wi` to `max_expand` and the post-loop `out[wi]='\0'` wrote 1 byte past the allocation. Found ~200k iterations after harness was wired in. | Med (fragment trust model is admin-only, so triggering is admin-self-foot-shot, but ASan-detectable OOB is a memory-safety bug regardless). Caused by replacement strings whose total expansion approaches `2*src_len`. | this PR |
 | `fuzz_substitute_placeholders` | Same OOB pattern at `nft_handler.c:163` (comment/quote pass-through write). Three write paths in the function, only the matched-placeholder path had a bounds check. Found seconds after the first fix. | Med (same trust model) | this PR |
+| `fuzz_netlink_diag` | Heap-buffer-overflow at `peer_lookup.c:134` (then-existing `NLMSG_OK` walk). Root cause: `NLMSG_NEXT` advances by `NLMSG_ALIGN(nlmsg_len)` (4-byte aligned) but `NLMSG_OK` only validates `nlmsg_len <= remaining` (without alignment). A crafted `nlmsg_len` whose 4-byte-aligned size exceeds `remaining` slips past `NLMSG_OK`, then `len -= align(nlmsg_len)` underflows the size_t, and the next iteration dereferences `nlh` past the buffer. Found within ~1k iterations of the harness being wired in. Fix: hand-rolled walk that validates alignment before advancing. | **High** — kernel-supplied bytes (any `CAP_NET_ADMIN` process can post crafted netlink replies); classic netlink-parser CVE pattern. Latent in the codebase since `peer_lookup_tcp` was introduced. | this PR |
 
 Regression inputs preserved at:
 - `fuzz/corpus/substitute_placeholders/regression_oob_terminator`
 - `fuzz/corpus/substitute_placeholders/regression_oob_unmatched_path`
+- `fuzz/corpus/netlink_diag/regression_oob_alignment_underflow`
 
 CIFuzz re-runs these on every PR.
 
@@ -135,6 +137,7 @@ status legend applies to). HTML report under `docs/fuzz-coverage/`.
 | `util_normalize_ip` | 93.02% | 96.15% | 91.30% | ✅ |
 | `validate_fragment_content` | 100.00% | 100.00% | 100.00% | ✅ |
 | `substitute_placeholders` | 96.83% | 100.00% | 97.92% | ✅ |
+| `peer_parse_diag_chunk` | 100.00% | 100.00% | 89.13% | ✅ |
 
 Per-source-file region coverage (illustrating how much codebase is
 *untouched* by any harness):
@@ -143,13 +146,13 @@ Per-source-file region coverage (illustrating how much codebase is
 |---|---|---|
 | `nft_handler.c` | 35.12% | covered: `validate_fragment_content`, `substitute_placeholders`. uncovered: `nft_handler_setup` cmd assembler, libnftables call sites, `nft_handler_cleanup`, `read_file` |
 | `pam_entry.c` | 29.41% | covered: `util_is_valid_username`, `util_normalize_ip`. uncovered: PAM entry points, arg parser, `is_debug_bypass_requested`, `free_pam_data` |
+| `peer_lookup.c` | 48.15% | covered: `peer_parse_diag_chunk`. uncovered: `peer_lookup_tcp`, `collect_socket_inodes`, `send_diag_request`, `scan_diag_reply` (I/O wrappers) |
 | `event.c` | 0% | no harness — `event_correlation_capture` sanitizer pending |
 | `keyring.c` | 0% | no harness — `keyring_read_serial` sanitizer pending |
-| `peer_lookup.c` | 0% | no harness — netlink walker is the highest-priority outstanding |
 | `bus_handler.c` | 0% | no harness; sd-bus surface mostly out-of-scope |
 | `sandbox.c` | 0% | static config, not a parser; no harness planned |
 | `session_file.c` | 0% | output-only JSON emitter; low priority |
-| **TOTAL** | **14.10%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
+| **TOTAL** | **19.35%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
 
 ## Sustained-fuzz channel
 
