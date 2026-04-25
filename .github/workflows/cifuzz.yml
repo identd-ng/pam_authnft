@@ -59,6 +59,22 @@ jobs:
             -artifact_prefix=fuzz/crashes/netlink_diag- \
             fuzz/corpus/netlink_diag/
 
+      - name: Fuzz keyring_sanitize (60s)
+        run: |
+          mkdir -p fuzz/corpus/keyring_sanitize fuzz/crashes
+          ./fuzz/out/fuzz_keyring_sanitize \
+            -max_total_time=60 \
+            -artifact_prefix=fuzz/crashes/keyring_sanitize- \
+            fuzz/corpus/keyring_sanitize/
+
+      - name: Fuzz corr_sanitize_copy (60s)
+        run: |
+          mkdir -p fuzz/corpus/correlation_capture fuzz/crashes
+          ./fuzz/out/fuzz_correlation_capture \
+            -max_total_time=60 \
+            -artifact_prefix=fuzz/crashes/correlation_capture- \
+            fuzz/corpus/correlation_capture/
+
       - name: Upload crash artifacts
         uses: actions/upload-artifact@v4
         if: failure()

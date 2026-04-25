@@ -59,3 +59,16 @@ $CC $CFLAGS $COMMON $PKGCF \
     fuzz/fuzz_netlink_diag.c "$WORK"/obj/*.o \
     $LIB_FUZZING_ENGINE $PKGLD \
     -o "$OUT/fuzz_netlink_diag"
+
+# fuzz_keyring_sanitize: printable-ASCII filter that scrubs a
+# kernel-keyring payload before it lands in an nftables comment field.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_keyring_sanitize.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_keyring_sanitize"
+
+# fuzz_correlation_capture: AUTHNFT_CORRELATION PAM env sanitizer.
+$CC $CFLAGS $COMMON $PKGCF \
+    fuzz/fuzz_correlation_capture.c "$WORK"/obj/*.o \
+    $LIB_FUZZING_ENGINE $PKGLD \
+    -o "$OUT/fuzz_correlation_capture"

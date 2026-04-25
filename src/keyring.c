@@ -58,6 +58,29 @@ static int is_safe(unsigned char c) {
     }
 }
 
+/* Sanitize a raw kernel-keyring payload into out[out_sz]. Bytes outside
+ * is_safe() (the printable-ASCII subset accepted by nftables comment
+ * fields) are replaced with '_'. Result is NUL-terminated and clamped
+ * to CLAIMS_TAG_MAX. Exposed (non-static) under FUZZ_BUILD so
+ * fuzz_keyring_sanitize can target the loop directly. */
+#ifndef FUZZ_BUILD
+static
+#endif
+ssize_t keyring_sanitize(const char *in, size_t in_len,
+                         char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return -1;
+    size_t w = 0;
+    for (size_t i = 0;
+         i < in_len && w + 1 < out_sz && w < CLAIMS_TAG_MAX;
+         i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c == '\0') break;
+        out[w++] = is_safe(c) ? (char)c : '_';
+    }
+    out[w] = '\0';
+    return (ssize_t)w;
+}
+
 ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz) {
     if (!out || out_sz == 0) return -1;
 
@@ -68,14 +91,7 @@ ssize_t keyring_read_serial(int32_t serial, char *out, size_t out_sz) {
     if (n < 0) return -1;
     if ((size_t)n > sizeof(raw)) return -1;  /* payload truncated; caller logs */
 
-    size_t w = 0;
-    for (long i = 0; i < n && w + 1 < out_sz && w < CLAIMS_TAG_MAX; i++) {
-        unsigned char c = (unsigned char)raw[i];
-        if (c == '\0') break;
-        out[w++] = is_safe(c) ? (char)c : '_';
-    }
-    out[w] = '\0';
-    return (ssize_t)w;
+    return keyring_sanitize(raw, (size_t)n, out, out_sz);
 }
 
 int keyring_fetch_tag(pam_handle_t *pamh, const char *env_var,

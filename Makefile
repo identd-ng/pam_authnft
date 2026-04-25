@@ -208,7 +208,9 @@ FUZZ_COMMON = -g -O1 -Iinclude -D_GNU_SOURCE -DFUZZ_BUILD \
 FUZZ_TARGETS = $(FUZZ_OUT)/fuzz_username \
                $(FUZZ_OUT)/fuzz_fragment \
                $(FUZZ_OUT)/fuzz_substitute_placeholders \
-               $(FUZZ_OUT)/fuzz_netlink_diag
+               $(FUZZ_OUT)/fuzz_netlink_diag \
+               $(FUZZ_OUT)/fuzz_keyring_sanitize \
+               $(FUZZ_OUT)/fuzz_correlation_capture
 
 FUZZ_SRC_OBJS = $(patsubst src/%.c,$(FUZZ_OUT)/obj/%.o,$(wildcard src/*.c))
 

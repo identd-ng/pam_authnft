@@ -54,12 +54,20 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const uint8_t *buf = data + 8;
     size_t len = size - 8;
 
+    /* Vary out_sz / pending_sz via two bytes of the inode-region so the
+     * "buffer too small" branches inside peer_parse_diag_chunk get
+     * exercised. The first byte selects out_sz, second selects
+     * pending_sz, both biased toward small values. */
+    static const size_t sizes[] = {1, 4, 8, 16, IP_STR_MAX};
+    size_t out_sz = sizes[data[0] % (sizeof(sizes) / sizeof(sizes[0]))];
+    size_t pending_sz = sizes[data[1] % (sizeof(sizes) / sizeof(sizes[0]))];
+
     char out[IP_STR_MAX] = {0};
     char pending[IP_STR_MAX] = {0};
 
     int rc = peer_parse_diag_chunk(buf, len, inodes, n_inodes,
-                                    out, sizeof(out),
-                                    pending, sizeof(pending));
+                                    out, out_sz,
+                                    pending, pending_sz);
 
     /* Property assertion: return code is one of the documented values. */
     if (rc != -1 && rc != 0 && rc != 1 && rc != 2)
@@ -71,8 +79,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
      * we just verify NUL-termination within bounds and printable
      * characters. */
     if (rc == 1) {
-        size_t outlen = strnlen(out, sizeof(out));
-        if (outlen >= sizeof(out))
+        size_t outlen = strnlen(out, out_sz);
+        if (outlen >= out_sz)
             __builtin_trap();
         for (size_t i = 0; i < outlen; i++) {
             unsigned char c = (unsigned char)out[i];

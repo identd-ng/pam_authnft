@@ -37,9 +37,9 @@ bugs hide.
 
 | Function | Source | Trust | Status | Harness | Notes |
 |---|---|---|---|---|---|
-| `peer_parse_diag_chunk` (extracted from `peer_lookup_tcp`) | `NETLINK_SOCK_DIAG` reply | semi-hostile (any CAP_NET_ADMIN process) | ✅ | `fuzz_netlink_diag` | 100% region / 100% line, 89.13% branch. Hand-rolled walk over `nlmsghdr` headers + `inet_diag_msg` cast. **Found a heap-buffer-overflow on first run** — see "Bugs found" |
+| `peer_parse_diag_chunk` (extracted from `peer_lookup_tcp`) | `NETLINK_SOCK_DIAG` reply | semi-hostile (any CAP_NET_ADMIN process) | ✅ | `fuzz_netlink_diag` | 100% region / 100% line, 95.65% branch. Hand-rolled walk over `nlmsghdr` headers + `inet_diag_msg` cast. **Found a heap-buffer-overflow on first run** — see "Bugs found" |
 | `socket:[NNNN]` parser in `peer_lookup_tcp` | `/proc/<pid>/fd/N` symlink | trusted | 🟠 ❌ Med | — | Integer parse, embedded NUL, overflow |
-| `keyring_read_serial` payload sanitizer | `keyctl(KEYCTL_READ)` | semi-trusted (producer trusted, consumer must defend) | 🟠 ❌ Med | — | printable-ASCII filter; truncation, journal-field-confusing chars |
+| `keyring_sanitize` (extracted from `keyring_read_serial`) | `keyctl(KEYCTL_READ)` payload | semi-trusted (producer trusted, consumer must defend) | ✅ | `fuzz_keyring_sanitize` | 100% region / line / branch. Property assertions on output character class, length cap, NUL termination |
 | `util_get_cgroup_path` invariant | `sd_pid_get_cgroup` return | trusted | ❌ Med | — | Depth/prefix validator; rejection paths matter |
 
 ### Admin-controlled inputs (root-owned files / PAM env)
@@ -49,7 +49,7 @@ bugs hide.
 | `validate_fragment_content` | `/etc/authnft/users/<user>` | admin | ✅ | `fuzz_fragment` | 100% region / line / branch. Seed corpus covers all rejection paths (relative include, outside-/etc/authnft/, glob characters); harness exercises both the memfd success path and a forced fopen-failure path |
 | `substitute_placeholders` | fragment content after validation | admin | ✅ | `fuzz_substitute_placeholders` | State machine + malloc sizing; sizing-invariant property assertion. **Found two heap-buffer-overflow bugs on first run** — see "Bugs found" below |
 | `read_file` size cap | fragment file size | admin | ❌ Low | — | Trivially correct (`fseek` + `ftell` + bound check); no harness planned |
-| `event_correlation_capture` sanitizer | PAM env `AUTHNFT_CORRELATION` | semi-trusted (upstream PAM module) | ❌ Med | — | Tiny but high-frequency surface |
+| `corr_sanitize_copy` (extracted from `event_correlation_capture`) | PAM env `AUTHNFT_CORRELATION` | semi-trusted (upstream PAM module) | ✅ | `fuzz_correlation_capture` | 100% region / line / branch. Drops bytes outside the journal-field-safe character class |
 | PAM module arg parser (`rhost_policy=…`, `claims_env=…`) | PAM config | admin | ❌ Low | — | Tiny |
 
 ### Composed nft command stream
@@ -137,7 +137,9 @@ status legend applies to). HTML report under `docs/fuzz-coverage/`.
 | `util_normalize_ip` | 93.02% | 96.15% | 91.30% | ✅ |
 | `validate_fragment_content` | 100.00% | 100.00% | 100.00% | ✅ |
 | `substitute_placeholders` | 96.83% | 100.00% | 97.92% | ✅ |
-| `peer_parse_diag_chunk` | 100.00% | 100.00% | 89.13% | ✅ |
+| `peer_parse_diag_chunk` | 100.00% | 100.00% | 95.65% | ✅ |
+| `keyring_sanitize` | 100.00% | 100.00% | 100.00% | ✅ |
+| `corr_sanitize_copy` | 100.00% | 100.00% | 100.00% | ✅ |
 
 Per-source-file region coverage (illustrating how much codebase is
 *untouched* by any harness):
@@ -147,12 +149,12 @@ Per-source-file region coverage (illustrating how much codebase is
 | `nft_handler.c` | 35.12% | covered: `validate_fragment_content`, `substitute_placeholders`. uncovered: `nft_handler_setup` cmd assembler, libnftables call sites, `nft_handler_cleanup`, `read_file` |
 | `pam_entry.c` | 29.41% | covered: `util_is_valid_username`, `util_normalize_ip`. uncovered: PAM entry points, arg parser, `is_debug_bypass_requested`, `free_pam_data` |
 | `peer_lookup.c` | 48.15% | covered: `peer_parse_diag_chunk`. uncovered: `peer_lookup_tcp`, `collect_socket_inodes`, `send_diag_request`, `scan_diag_reply` (I/O wrappers) |
-| `event.c` | 0% | no harness — `event_correlation_capture` sanitizer pending |
-| `keyring.c` | 0% | no harness — `keyring_read_serial` sanitizer pending |
+| `keyring.c` | ≈40% | covered: `keyring_sanitize`, `is_safe`. uncovered: `keyring_read_serial`, `keyring_fetch_tag`, `keyctl_syscall` (require live kernel keyring + PAM context) |
+| `event.c` | small | covered: `corr_sanitize_copy`, `is_corr_safe`. uncovered: `event_correlation_capture` (clock + getrandom + getpid synthesis path), `event_open_emit`, `event_close_emit` (require live sd-bus journal socket) |
 | `bus_handler.c` | 0% | no harness; sd-bus surface mostly out-of-scope |
 | `sandbox.c` | 0% | static config, not a parser; no harness planned |
 | `session_file.c` | 0% | output-only JSON emitter; low priority |
-| **TOTAL** | **19.35%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
+| **TOTAL** | **22.23%** | The bar is per-function ≥90% for ✅, not aggregate; aggregate goes up by adding harnesses, not by fuzzing the same surface harder |
 
 ## Sustained-fuzz channel
 

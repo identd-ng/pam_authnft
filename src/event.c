@@ -40,6 +40,26 @@ static int is_corr_safe(unsigned char c) {
     return c == '_' || c == '-' || c == '.' || c == ':';
 }
 
+/* Sanitize-copy a correlation token from `in` into `out[out_sz]`.
+ * Anything outside is_corr_safe() is dropped (not substituted, since
+ * the token must remain a single journal-field-safe identifier).
+ * Returns the number of bytes written (excluding the NUL terminator).
+ * Exposed (non-static) under FUZZ_BUILD so fuzz_correlation_capture
+ * can target the loop directly. */
+#ifndef FUZZ_BUILD
+static
+#endif
+size_t corr_sanitize_copy(const char *in, char *out, size_t out_sz) {
+    if (!in || !out || out_sz == 0) return 0;
+    size_t w = 0;
+    for (size_t i = 0; in[i] && w + 1 < out_sz; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (is_corr_safe(c)) out[w++] = (char)c;
+    }
+    out[w] = '\0';
+    return w;
+}
+
 void event_correlation_capture(pam_handle_t *pamh, char *out, size_t out_sz) {
     if (!out || out_sz == 0) return;
     out[0] = '\0';
@@ -49,13 +69,7 @@ void event_correlation_capture(pam_handle_t *pamh, char *out, size_t out_sz) {
      * See docs/INTEGRATIONS.txt §6.4 for the contract. */
     const char *supplied = pamh ? pam_getenv(pamh, "AUTHNFT_CORRELATION") : NULL;
     if (supplied && supplied[0]) {
-        size_t w = 0;
-        for (size_t i = 0; supplied[i] && w + 1 < out_sz; i++) {
-            unsigned char c = (unsigned char)supplied[i];
-            if (is_corr_safe(c)) out[w++] = (char)c;
-        }
-        out[w] = '\0';
-        if (w > 0) return;
+        if (corr_sanitize_copy(supplied, out, out_sz) > 0) return;
     }
 
     /* Synthesize. Format: "authnft-<unixtime>-<pid>-<8-hex random>".
