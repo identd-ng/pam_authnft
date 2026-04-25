@@ -24,7 +24,31 @@ import sys
 # they drift, the oracle harness will start disagreeing with C.
 MAX_USER_LEN = 32
 IP_STR_MAX = 64
+CGROUP_PATH_MAX = 192
+CLAIMS_TAG_MAX = 192
+CORRELATION_ID_MAX = 64
 USERNAME_RE = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+
+# keyring_sanitize allowlist (mirrors is_safe() in src/keyring.c).
+# Anything outside this set is replaced with '_'. Output ends up in
+# nftables comment fields, so quotes / backslashes / control chars
+# must never make it through.
+KEYRING_SAFE = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789"
+    "_=,.:;/-"
+)
+
+# corr_sanitize_copy allowlist (mirrors is_corr_safe() in src/event.c).
+# Narrower than the keyring tag class — these are opaque IDs, not
+# human-readable labels, so no ';', '/', ',' etc.
+CORR_SAFE = set(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789"
+    "_-.:"
+)
 
 
 def is_valid_username(u: str) -> int:
@@ -72,6 +96,66 @@ def normalize_ip(s: str):
         return None
 
 
+def validate_cgroup_path(s: str):
+    """Mirrors validate_cgroup_path (src/bus_handler.c).
+
+    Returns the leading-slash-stripped path on accept, or None on
+    reject. A valid path is exactly `/authnft.slice/<name>.scope`
+    with no further slashes in `<name>`.
+    """
+    if not s or not s.startswith("/"):
+        return None
+    p = s[1:]
+    slash = p.find("/")
+    if slash < 0:
+        return None
+    first, second = p[:slash], p[slash + 1:]
+    if first != "authnft.slice":
+        return None
+    if not second:
+        return None
+    if "/" in second:
+        return None
+    if len(second) < 7 or not second.endswith(".scope"):
+        return None
+    if len(p) >= CGROUP_PATH_MAX:
+        return None
+    return p
+
+
+def keyring_sanitize(in_bytes: bytes) -> bytes:
+    """Mirrors keyring_sanitize (src/keyring.c).
+
+    Bytes outside KEYRING_SAFE become '_'. Output is clamped to
+    CLAIMS_TAG_MAX. Stops at the first NUL.
+    """
+    out = bytearray()
+    for b in in_bytes:
+        if len(out) >= CLAIMS_TAG_MAX:
+            break
+        if b == 0:
+            break
+        ch = chr(b)
+        out.append(b if ch in KEYRING_SAFE else ord("_"))
+    return bytes(out)
+
+
+def corr_sanitize_copy(s: str) -> str:
+    """Mirrors corr_sanitize_copy (src/event.c).
+
+    Bytes outside CORR_SAFE are DROPPED (not substituted). Output
+    is clamped to CORRELATION_ID_MAX - 1 chars + NUL.
+    """
+    out = []
+    cap = CORRELATION_ID_MAX - 1  # leave room for NUL
+    for c in s:
+        if len(out) >= cap:
+            break
+        if c in CORR_SAFE:
+            out.append(c)
+    return "".join(out)
+
+
 def emit_username():
     for line in sys.stdin:
         line = line.rstrip("\n")
@@ -88,18 +172,54 @@ def emit_normalize_ip():
             sys.stdout.write(f"1|{result}\n")
 
 
+def emit_cgroup_path():
+    for line in sys.stdin:
+        line = line.rstrip("\n")
+        result = validate_cgroup_path(line)
+        if result is None:
+            sys.stdout.write("-1|\n")
+        else:
+            sys.stdout.write(f"0|{result}\n")
+
+
+def emit_keyring_sanitize():
+    # Read raw bytes so embedded high-bit characters round-trip.
+    for line in sys.stdin.buffer:
+        # Strip trailing '\n' but keep everything before it.
+        if line.endswith(b"\n"):
+            line = line[:-1]
+        out = keyring_sanitize(line)
+        sys.stdout.buffer.write(f"{len(out)}|".encode("utf-8"))
+        sys.stdout.buffer.write(out)
+        sys.stdout.buffer.write(b"\n")
+
+
+def emit_correlation_capture():
+    for line in sys.stdin:
+        line = line.rstrip("\n")
+        out = corr_sanitize_copy(line)
+        sys.stdout.write(f"{len(out)}|{out}\n")
+
+
 def main():
     if len(sys.argv) < 2:
-        sys.stderr.write(f"usage: {sys.argv[0]} {{username|normalize_ip}}\n")
+        sys.stderr.write(
+            f"usage: {sys.argv[0]} {{username|normalize_ip|cgroup_path|"
+            f"keyring_sanitize|correlation_capture}}\n"
+        )
         sys.exit(2)
     fn = sys.argv[1]
-    if fn == "username":
-        emit_username()
-    elif fn == "normalize_ip":
-        emit_normalize_ip()
-    else:
+    dispatchers = {
+        "username":            emit_username,
+        "normalize_ip":        emit_normalize_ip,
+        "cgroup_path":         emit_cgroup_path,
+        "keyring_sanitize":    emit_keyring_sanitize,
+        "correlation_capture": emit_correlation_capture,
+    }
+    if fn not in dispatchers:
         sys.stderr.write(f"unknown function: {fn}\n")
         sys.exit(2)
+    dispatchers[fn]()
 
 
 if __name__ == "__main__":

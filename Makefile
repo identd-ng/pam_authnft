@@ -79,9 +79,14 @@ test-symbols: $(TARGET)
 # answers) that ASan-class fuzzing cannot find. No root required.
 ORACLE_RUNNER = tests/oracle/oracle_runner
 
-$(ORACLE_RUNNER): tests/oracle/oracle_runner.c $(OBJS)
-	$(CC) $(CFLAGS_BASE) -g -O1 \
-	    tests/oracle/oracle_runner.c $(OBJS) -o $@ \
+# The oracle runner targets several helpers that are file-static in
+# production (validate_cgroup_path, keyring_sanitize, corr_sanitize_copy).
+# Compile every src/*.c with -DFUZZ_BUILD so the static qualifier is
+# stripped — same pattern the libFuzzer harnesses use. The production
+# pam_authnft.so build path (no -DFUZZ_BUILD) is unaffected.
+$(ORACLE_RUNNER): tests/oracle/oracle_runner.c $(wildcard src/*.c) include/authnft.h
+	$(CC) $(CFLAGS_BASE) `$(PKG_CONFIG) --cflags $(LIBS)` -DFUZZ_BUILD -g -O1 \
+	    tests/oracle/oracle_runner.c $(wildcard src/*.c) -o $@ \
 	    `$(PKG_CONFIG) --libs $(LIBS)`
 
 test-oracle: $(ORACLE_RUNNER)

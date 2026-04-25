@@ -37,7 +37,7 @@ fi
 PASS=0
 FAIL=0
 
-for fn in username normalize_ip; do
+for fn in username normalize_ip cgroup_path keyring_sanitize correlation_capture; do
     input_file="$INPUT_DIR/$fn.txt"
     [ -f "$input_file" ] || { echo "no input file for $fn"; continue; }
 
