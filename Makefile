@@ -241,7 +241,12 @@ fuzz: $(FUZZ_TARGETS)
 # without rebuilding.
 FUZZ_COV_OUT  = fuzz/coverage
 FUZZ_COV_HTML = docs/fuzz-coverage
-FUZZ_COV_CFLAGS = $(FUZZ_COMMON) -fprofile-instr-generate -fcoverage-mapping
+# -ffile-prefix-map keeps absolute paths to the source tree out of the
+# debug info / coverage mapping, so the generated HTML filenames are
+# repo-relative (e.g. src/foo.c.html) instead of leaking the developer's
+# home directory.
+FUZZ_COV_CFLAGS = $(FUZZ_COMMON) -fprofile-instr-generate -fcoverage-mapping \
+                  -fcoverage-prefix-map=$(CURDIR)/=
 
 fuzz-coverage:
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata required"; exit 1; }
@@ -269,13 +274,37 @@ fuzz-coverage:
 	done
 	llvm-profdata merge -sparse $(FUZZ_COV_OUT)/*.profraw \
 	    -o $(FUZZ_COV_OUT)/merged.profdata
-	@rm -rf $(FUZZ_COV_HTML)
+	@# Remove only what llvm-cov regenerates; README.md + .gitignore
+	@# are committed and must survive a refresh.
+	@rm -rf $(FUZZ_COV_HTML)/coverage \
+	        $(FUZZ_COV_HTML)/index.html \
+	        $(FUZZ_COV_HTML)/style.css \
+	        $(FUZZ_COV_HTML)/control.js
 	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \
 	    llvm-cov show $(FUZZ_COV_OUT)/$$(basename $$first) \
 	        -instr-profile=$(FUZZ_COV_OUT)/merged.profdata \
 	        -format=html -output-dir=$(FUZZ_COV_HTML) \
 	        --ignore-filename-regex='/usr/.*|fuzz/.*' \
 	        src/
+	@# llvm-cov bakes the absolute build path into the output filename
+	@# tree and into HTML hrefs. Flatten the per-source tree to
+	@# coverage/src/ and strip $(CURDIR)/ from every HTML body so the
+	@# committed report is portable across clones — fresh checkouts on
+	@# any path still render correctly on GitHub.
+	@if [ -d "$(FUZZ_COV_HTML)/coverage$(CURDIR)" ]; then \
+	    mkdir -p "$(FUZZ_COV_HTML)/coverage-flat"; \
+	    cp -r "$(FUZZ_COV_HTML)/coverage$(CURDIR)/src" "$(FUZZ_COV_HTML)/coverage-flat/src"; \
+	    rm -rf "$(FUZZ_COV_HTML)/coverage"; \
+	    mv "$(FUZZ_COV_HTML)/coverage-flat" "$(FUZZ_COV_HTML)/coverage"; \
+	fi
+	@# Two passes: first fix hrefs of the form coverage/<abs-path>/src/...
+	@# (llvm-cov concatenates coverage/ with the absolute source path,
+	@# eating the leading slash), then strip any remaining $(CURDIR)/
+	@# occurrences from displayed file paths.
+	@find $(FUZZ_COV_HTML) -name '*.html' -exec sed -i \
+	    -e 's|coverage$(CURDIR)/|coverage/|g' \
+	    -e 's|$(CURDIR)/||g' \
+	    {} +
 	@echo
 	@echo "=== coverage summary ==="
 	@first=$$(echo $(FUZZ_TARGETS) | awk '{print $$1}'); \
