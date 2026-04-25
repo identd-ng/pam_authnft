@@ -54,7 +54,10 @@ $(TARGET): $(OBJS)
 	$(CC) $(SO_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) `$(PKG_CONFIG) --libs $(LIBS)`
 
 # Unit tests — no root required. Stages that need CAP_NET_ADMIN skip gracefully.
-test: test-symbols $(TEST_BIN)
+# Includes the differential-oracle harness (Phase 4.1 of the security plan)
+# which cross-validates the small parsers against an independent Python
+# implementation. Catches logic bugs that ASan-class fuzzing cannot find.
+test: test-symbols test-oracle $(TEST_BIN)
 	./$(TEST_BIN)
 
 # Invariant guard #7: exported symbols must be exactly the two PAM entry points.
@@ -69,6 +72,20 @@ test-symbols: $(TARGET)
 	    echo "[FAIL] expected \"$$expected\", got \"$$exported\""; \
 	    exit 1; \
 	fi
+
+# Differential oracle harness — Phase 4.1 of the security plan.
+# Cross-validates pam_authnft's small parsers against an independent
+# Python re-implementation. Catches logic bugs (wrong-but-plausible
+# answers) that ASan-class fuzzing cannot find. No root required.
+ORACLE_RUNNER = tests/oracle/oracle_runner
+
+$(ORACLE_RUNNER): tests/oracle/oracle_runner.c $(OBJS)
+	$(CC) $(CFLAGS_BASE) -g -O1 \
+	    tests/oracle/oracle_runner.c $(OBJS) -o $@ \
+	    `$(PKG_CONFIG) --libs $(LIBS)`
+
+test-oracle: $(ORACLE_RUNNER)
+	./tests/oracle/run.sh
 
 # Audit aid for invariant guard #5 (seccomp allowlist provenance).
 # Runs one pamtester open+close cycle under `strace -f -c` with the sandbox
@@ -343,7 +360,7 @@ fuzz-coverage:
 # committed artefact, browsable without rebuilding. Re-run
 # `make fuzz-coverage` to refresh.
 clean:
-	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
+	rm -rf $(OBJ_DIR) $(FUZZ_OUT) $(FUZZ_COV_OUT) $(TARGET) $(TEST_BIN) $(ORACLE_RUNNER) *.d rules.tmp trace.log trace-claims.log trace-features.log man/pam_authnft.8 .container-result
 
 distclean: clean
 	@if sudo nft list tables 2>/dev/null | grep -q "inet authnft"; then \
@@ -351,6 +368,6 @@ distclean: clean
 	fi
 	@sudo rm -f /etc/pam.d/authnft_test /etc/authnft/users/$(TEST_USER)
 
-.PHONY: all debug clean fuzz fuzz-coverage test test-symbols test-integration test-container \
+.PHONY: all debug clean fuzz fuzz-coverage test test-oracle test-symbols test-integration test-container \
         test-integration-container trace trace-container trace-features \
         distclean install install-tmpfiles uninstall man install-man
