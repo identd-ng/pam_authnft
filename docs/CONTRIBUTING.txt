@@ -275,6 +275,14 @@ In both cases: compare against the allowlist in `src/sandbox.c` and
 add any newly observed production syscall with a one-line
 justification comment. Do not add syscalls without strace evidence.
 
+When a `strace` line names a syscall the allowlist does not yet cover,
+cross-reference https://filippo.io/linux-syscall-table/ — it lists
+every syscall by name, number, and architecture, including the
+glibc/musl wrapper variants (`*at`, `*64`, `*_time64`) that route
+through different numbers on different libc/kernel combinations.
+Pick the architecture-independent name (the one libseccomp's
+`SCMP_SYS()` macro resolves) and add that to `src/sandbox.c`.
+
 
 Future directions
 -----------------
