@@ -460,12 +460,18 @@ scope; the systemd documentation is authoritative.
 Status: stable (schema v=2)
 
 pam_authnft writes a per-session JSON file at
-/run/authnft/sessions/<scope_unit>.json on open_session, and removes it on
-close_session. The file exposes the same identity data that
-pam_set_data holds internally (§1.4), without requiring a PAM handle
-or privileged access to module source. This is the read-side
-observability contract for SIEM agents, workload schedulers,
-container runtimes, and operator dashboards.
+/run/authnft/sessions/<scope_unit>.json on **successful** open_session,
+and removes it on close_session. A failed open_session writes no file
+(the scope and per-session nft state are also rolled back; see
+docs/ARCHITECTURE.txt "Failed-open rollback"). Consumers may rely on
+the existence of <scope_unit>.json as proof that the corresponding
+session reached `nft_handler_setup` success.
+
+The file exposes the same identity data that pam_set_data holds
+internally (§1.4), without requiring a PAM handle or privileged
+access to module source. This is the read-side observability
+contract for SIEM agents, workload schedulers, container runtimes,
+and operator dashboards.
 
 5.6.1 Location and lifecycle
 

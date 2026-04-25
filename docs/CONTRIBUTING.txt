@@ -65,6 +65,18 @@ Invariants to preserve
    is best-effort. Cleanup failures log a warning and return
    PAM_SUCCESS so a session can always unwind.
 
+   Failed open_session paths roll back any partial state they created:
+   `nft_handler_setup` calls `nft_partial_cleanup` on every error path
+   that fires after call 1 succeeded (removes per-session chain + 3
+   sets, plus the jump rule when its handle was captured), and
+   `pam_sm_open_session` calls `bus_handler_stop` after any failure
+   that occurred after `bus_handler_start` succeeded. The result is
+   that a failed open leaves no nft state, no transient scope, and no
+   session-identity JSON — a clean retry is always safe. Integration
+   test 10.14 guards both rollbacks. Documented edge case: if call 2
+   commits the jump rule but the kernel-handle parse fails, the rule
+   leaks because nftables has no delete-by-name primitive.
+
 5. Fragment validation is strict: `stat()` must succeed, `st_uid == 0`,
    world-writable bit must be clear. Failure is a user-visible
    PAM_AUTH_ERR via `pam_error()`. This is the trust boundary — treat
@@ -220,6 +232,8 @@ incident.
                            diff against src/sandbox.c before adding
   #6 open/close asymmetry  integration 10.7: close without prior open
                            must return PAM_SUCCESS
+                           integration 10.14: failed open must leave
+                           no nft state and no scope unit (rollback)
   #7 exported symbols      `make test-symbols` (also wired into
                            `make test`) asserts exactly
                            pam_sm_open_session + pam_sm_close_session
