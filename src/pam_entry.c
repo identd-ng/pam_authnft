@@ -203,6 +203,9 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     authnft_session_t *sd = calloc(1, sizeof(*sd));
     if (!sd) {
         pam_syslog(pamh, LOG_ERR, "authnft: out of memory storing session data");
+        /* bus_handler_start created the scope unit above; roll it back
+         * so a failed open_session leaves no orphan in systemd state. */
+        (void)bus_handler_stop(pamh, user, session_pid);
         return PAM_SESSION_ERR;
     }
     snprintf(sd->scope_unit, sizeof(sd->scope_unit), "authnft-%s-%d.scope",
@@ -235,6 +238,7 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     if (pam_set_data(pamh, "authnft_cg_id", sd, free_pam_data) != PAM_SUCCESS) {
         pam_syslog(pamh, LOG_ERR, "authnft: failed to store session data");
         free(sd);
+        (void)bus_handler_stop(pamh, user, session_pid);
         return PAM_SESSION_ERR;
     }
 
@@ -242,6 +246,12 @@ PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
     if (rc == PAM_SUCCESS) {
         (void)session_file_write(pamh, sd, user, session_pid);
         event_open_emit(pamh, sd, user, session_pid);
+    } else {
+        /* nft_handler_setup rolled back its own partial nft state.
+         * The systemd scope created by bus_handler_start above is
+         * still live — roll it back too. `sd` stays registered with
+         * PAM and is freed by free_pam_data when the handle ends. */
+        (void)bus_handler_stop(pamh, user, session_pid);
     }
     return rc;
 }

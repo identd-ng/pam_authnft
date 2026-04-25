@@ -105,6 +105,17 @@ int nft_handler_cleanup(pam_handle_t *pamh, const char *user,
 int bus_handler_start(pam_handle_t *pamh, const char *user, int session_pid);
 
 /*
+ * bus_handler_stop:
+ * Best-effort StopUnit on the transient scope created by bus_handler_start.
+ * Used to roll back the scope on error paths in pam_sm_open_session that
+ * fire after bus_handler_start succeeded but before nft_handler_setup
+ * completed. Tolerates a missing unit (returns 0; the scope may have been
+ * reaped between the start and stop, which is fine). Returns -1 on bus
+ * connection errors.
+ */
+int bus_handler_stop(pam_handle_t *pamh, const char *user, int session_pid);
+
+/*
  * sandbox_apply:
  * Installs a seccomp-BPF allowlist with SCMP_ACT_KILL default and sets
  * PR_SET_NO_NEW_PRIVS before loading the filter.

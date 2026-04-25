@@ -143,6 +143,35 @@ Session-file orphans are reaped by systemd-tmpfiles (MaxAge=7d)
 per data/authnft.tmpfiles.
 
 
+Failed-open rollback
+--------------------
+
+When open_session fails after partial state has been created,
+pam_authnft rolls back to a clean slate before returning the
+PAM error. There are two layers:
+
+    1. nft_handler_setup runs an internal partial-cleanup on every
+       error path that fires after call 1 succeeded. It removes the
+       per-session chain, the three per-session sets, and (when
+       call 2 had captured a handle) the jump rule. A best-effort
+       single nft transaction; tolerates absent objects.
+    2. pam_sm_open_session calls bus_handler_stop on every error
+       path that fires after bus_handler_start succeeded. StopUnit
+       on the transient scope; tolerates "unit not found" so a
+       race where systemd reaped the scope already is benign.
+
+Net result: a failed open leaves the kernel and systemd state
+indistinguishable from "session was never attempted." A caller may
+retry without resource accumulation.
+
+Documented edge case: if call 2 commits the jump rule but the
+echo-format handle parse fails, the rule leaks because nftables
+has no delete-by-name primitive. Empirically rare (requires a
+libnftables regression). Integration test 10.14 guards the common
+path; a regression would either leave per-session chains/sets in
+the table or leave authnft-*.scope units active.
+
+
 Session-identity files
 ----------------------
 

@@ -556,4 +556,49 @@ pass "10.13: per-session isolation verified (alice=0, bob=$BOB_PKTS — no cross
 
 nft delete table inet authnft_1013 2>/dev/null
 
+# 10.14: Failure-path rollback — when nft_handler_setup fails partway
+# through (e.g., the fragment has a libnftables syntax error), neither
+# the per-session nft chain/sets NOR the systemd transient scope must
+# survive the failed open_session. Without the rollback, every failed
+# auth attempt leaks a chain + 3 sets in the shared `authnft` table
+# and a transient scope under authnft.slice — observable but harmless,
+# until enough accumulate to make `nft list table inet authnft` and
+# `systemctl list-units 'authnft-*.scope'` unreadable.
+#
+# Audit findings A1 (nft state rollback) + A2 (scope rollback).
+nft delete table inet authnft 2>/dev/null || true
+printf "${YELLOW}10.14: Failure-path rollback (no leftover nft state or scope)${RESET}\n"
+
+# A fragment that's syntactically wrong: nft will reject "garbage_token"
+# at call 3, AFTER call 1 has created the per-session chain + sets and
+# call 2 has installed the jump rule.
+cat > "$FRAGMENT" <<'NFT'
+add rule inet authnft @session_chain garbage_token_no_such_keyword accept
+NFT
+chown root:root "$FRAGMENT"
+chmod 644 "$FRAGMENT"
+
+# This open_session MUST fail (PAM_AUTH_ERR from call 3).
+if pamtester -I rhost=127.0.0.1 authnft_test "$TEST_USER" open_session > /dev/null 2>&1; then
+    fail "10.14: open_session with broken fragment unexpectedly succeeded"
+fi
+
+# Assert no per-session chain or set survives.
+TABLE_STATE=$(nft list table inet authnft 2>/dev/null || true)
+if echo "$TABLE_STATE" | grep -qE '(chain|set) session_'; then
+    echo "$TABLE_STATE" >&2
+    fail "10.14: per-session nft state leaked after failed open_session (A1 regression)"
+fi
+
+# Assert no transient scope under authnft.slice survives.
+LEAKED_SCOPES=$(systemctl list-units --all --no-legend --type=scope 'authnft-*.scope' 2>/dev/null \
+    | awk '{print $1}' | grep -v '^$' || true)
+if [[ -n "$LEAKED_SCOPES" ]]; then
+    echo "leaked scopes: $LEAKED_SCOPES" >&2
+    fail "10.14: systemd scope leaked after failed open_session (A2 regression)"
+fi
+
+pass "10.14: failed open_session rolled back nft state and scope cleanly"
+nft delete table inet authnft 2>/dev/null || true
+
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"

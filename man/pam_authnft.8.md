@@ -132,6 +132,19 @@ and deleted, and the three per-session sets are deleted (single
 transaction). Cleanup failures are logged but do not prevent session
 teardown.
 
+If session open fails after the systemd transient scope was created,
+the module rolls back the partial state: any per-session chain,
+sets, and jump rule already inserted are removed best-effort, and
+the scope is stopped via **StopUnit** on the same D-Bus path used
+to create it. A failed open therefore leaves the kernel and systemd
+state indistinguishable from "session was never attempted" — a
+caller can retry without resource accumulation. The exception is
+the narrow window where call 2 commits the jump rule but the
+kernel-returned handle fails to parse: nftables has no
+delete-by-name primitive, so the orphan jump rule persists until
+the table is deleted. This path is empirically rare (it requires a
+libnftables echo-format regression).
+
 # FILES
 
 */etc/authnft/users/\<user\>*
