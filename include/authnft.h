@@ -123,6 +123,27 @@ int bus_handler_stop(pam_handle_t *pamh, const char *user, int session_pid);
 int sandbox_apply(pam_handle_t *pamh);
 
 /*
+ * authnft_audit_fragment_reject:
+ * Emit a structured AUDIT_USER_ERR record via libaudit when a session
+ * is denied because the per-user fragment failed validation. Parallel
+ * channel to the existing pam_syslog/pam_error reporting; visible to
+ * SIEM consumers that scrape /var/log/audit/audit.log.
+ *
+ * `reason` is a short fixed identifier (no spaces, no quotes):
+ *   "missing"     stat() on the fragment failed
+ *   "perms"       fragment not root-owned, or world-writable
+ *   "content"     validate_fragment_content rejected (verb / include)
+ *   "nft-syntax"  libnftables rejected the fragment at load
+ *
+ * Audit emission failure (subsystem disabled, missing capability) is
+ * non-fatal: the function returns silently and the rejection still
+ * propagates as PAM_AUTH_ERR.
+ */
+void authnft_audit_fragment_reject(const char *user,
+                                    const char *reason,
+                                    const char *path);
+
+/*
  * util_is_valid_username:
  * Validates the username for length and illegal characters.
  * Rejects path traversal sequences, shell metacharacters, and leading hyphens.

@@ -209,6 +209,19 @@ with `journalctl -t pam_authnft`. The two events are joined by a
 shared *AUTHNFT_CORRELATION* token. Fields and SIEM integration
 guidance: **docs/INTEGRATIONS.txt** §6.2.
 
+In parallel, every fragment-rejection path also emits an
+**AUDIT_USER_ERR** (1109) record via the Linux audit subsystem
+(see **audit**(7)). The application portion of the record carries
+the structured key-value pair *op=authnft-fragment-reject*, a short
+*reason* tag (*missing*, *perms*, *content*, or *nft-syntax*), the
+PAM user, and the fragment path. SOC consumers that scrape
+*/var/log/audit/audit.log* receive denied-session events without
+having to subscribe to the systemd journal as well. The pam_syslog
+prose channel stays in place for operator-facing logs; the audit
+channel is additive. Audit-subsystem failure (disabled, missing
+*CAP_AUDIT_WRITE*) is non-fatal — the PAM rejection still
+propagates. Field schema: **docs/INTEGRATIONS.txt** §6.2.7.
+
 # RETURN VALUES
 
 **PAM_SUCCESS**

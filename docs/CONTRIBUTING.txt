@@ -17,8 +17,8 @@ Build
     sudo make test-integration
                        # pamtester + valgrind, requires root
 
-pkg-config probes five libraries: libnftables, libseccomp, libsystemd,
-pam, libcap. The hardening flag set in the Makefile is load-bearing —
+pkg-config probes six libraries: libnftables, libseccomp, libsystemd,
+pam, libcap, audit. The hardening flag set in the Makefile is load-bearing —
 stage 6 of the test suite greps `checksec` output for Full RELRO.
 
 Debug bypass (env or PAM arg) disables seccomp only:

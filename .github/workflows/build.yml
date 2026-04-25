@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
-            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
+            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev libaudit-dev
       - name: Build
         run: make CC=${{ matrix.compiler }}
       - name: Unit tests (no root)

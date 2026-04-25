@@ -28,7 +28,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libnftables-dev libseccomp-dev libsystemd-dev \
-            libpam0g-dev libcap-dev
+            libpam0g-dev libcap-dev libaudit-dev
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

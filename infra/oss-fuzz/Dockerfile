@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsystemd-dev \
     libpam0g-dev \
     libcap-dev \
+    libaudit-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY build.sh $SRC/

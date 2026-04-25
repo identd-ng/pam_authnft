@@ -17,7 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cppcheck \
-            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
+            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev libaudit-dev
       - name: Run cppcheck
         run: |
           cppcheck --enable=warning,performance,portability --std=c11 \
