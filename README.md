@@ -375,7 +375,10 @@ and the CI gate inventory, see
 nftables set types and their schemas, the fragment ownership model
 (`st_uid == 0`, no world-writable), the element comment grammar documented
 in [INTEGRATIONS.txt §6.1](docs/INTEGRATIONS.txt), the session-identity
-JSON schema (`v=2`, §5.6), and the structured audit event fields (§6.2).
+JSON schema (`v=2`, §5.6), the structured journald audit fields (§6.2),
+and the Linux audit-syscall channel
+(`AUDIT_USER_ERR` with reason tags `missing | perms | content | nft-syntax`,
+§6.2.7).
 
 **May change before 1.0** — `claims_env` wire format details,
 `rhost_policy=kernel` NETLINK internals, `authnft.slice` shipped defaults.
