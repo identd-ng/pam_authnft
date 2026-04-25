@@ -1,0 +1,185 @@
+name: fuzz-nightly
+# Sustained fuzzing — finds bugs that the per-PR 60-second CIFuzz
+# window can't reach. Runs every harness for 30 minutes against the
+# corpus checked in at fuzz/corpus/. On a crash, files an issue on
+# the repo with the harness name, the ASan/UBSan output, and the
+# minimized reproducer attached as a workflow artefact.
+#
+# Triggers:
+#   - schedule: daily at 03:17 UTC (off-peak)
+#   - workflow_dispatch: manual button on the Actions tab
+#
+# Cost note: ~30 min × 8 harnesses × 1 ubuntu-latest runner = ~4 hr/day
+# of free-tier minutes. Public repos get unlimited; private repos
+# would burn ~120 hr/month — switch to runs-on: self-hosted in that
+# case. See docs/CONTRIBUTING.txt §Sustained fuzz.
+on:
+  schedule:
+    # 03:17 UTC daily. Cron shifts in busy periods, so the offset
+    # avoids piling onto the top-of-hour cron crowd.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: 'Per-harness fuzz duration (seconds)'
+        required: false
+        default: '1800'
+        type: string
+
+permissions:
+  # contents:read for checkout; issues:write to file crash issues.
+  contents: read
+  issues: write
+
+env:
+  # Leak detection needs ptrace which GitHub Actions runners deny.
+  ASAN_OPTIONS: detect_leaks=0
+  # Default duration when not on workflow_dispatch.
+  FUZZ_SECONDS: '1800'
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      # Each harness gets its own job slot — they run in parallel and
+      # one crash doesn't stop the others. Easier to triage than a
+      # single 4-hour serial run.
+      matrix:
+        harness:
+          - fuzz_username
+          - fuzz_fragment
+          - fuzz_substitute_placeholders
+          - fuzz_netlink_diag
+          - fuzz_keyring_sanitize
+          - fuzz_correlation_capture
+          - fuzz_cgroup_path
+          - fuzz_socket_inode
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang pkg-config \
+            libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev
+
+      - name: Build fuzz targets
+        run: make fuzz
+
+      - name: Resolve fuzz duration
+        id: duration
+        run: |
+          dur="${{ github.event.inputs.duration_seconds }}"
+          if [ -z "$dur" ]; then dur="${FUZZ_SECONDS}"; fi
+          echo "seconds=$dur" >> "$GITHUB_OUTPUT"
+          echo "Fuzzing ${{ matrix.harness }} for $dur seconds"
+
+      - name: Fuzz ${{ matrix.harness }}
+        id: fuzz
+        run: |
+          mkdir -p fuzz/crashes
+          corpus_dir="fuzz/corpus/${HARNESS_NAME#fuzz_}"
+          [ -d "$corpus_dir" ] || corpus_dir=""
+          # libFuzzer exit codes:
+          #   0   timed-out cleanly (-max_total_time)
+          #   77  crash (the bug we want)
+          #   any other non-zero — assume crash too
+          set +e
+          ./fuzz/out/${HARNESS_NAME} \
+            -max_total_time=${SECONDS_LIMIT} \
+            -artifact_prefix=fuzz/crashes/${HARNESS_NAME}- \
+            $corpus_dir \
+            > fuzz/crashes/${HARNESS_NAME}.log 2>&1
+          ec=$?
+          set -e
+          echo "exit=$ec" >> "$GITHUB_OUTPUT"
+          if [ "$ec" -ne 0 ]; then
+            echo "::warning::${HARNESS_NAME} exited $ec — crash artefact uploaded"
+            tail -200 fuzz/crashes/${HARNESS_NAME}.log
+            exit 1
+          fi
+        env:
+          HARNESS_NAME: ${{ matrix.harness }}
+          SECONDS_LIMIT: ${{ steps.duration.outputs.seconds }}
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.harness }}-artefacts
+          path: |
+            fuzz/crashes/
+          retention-days: 14
+
+      - name: File crash issue
+        if: failure() && steps.fuzz.outputs.exit != '0'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const harness = '${{ matrix.harness }}';
+            const logPath = `fuzz/crashes/${harness}.log`;
+            let log = '';
+            try { log = fs.readFileSync(logPath, 'utf8').slice(-8000); }
+            catch (e) { log = '(log unavailable)'; }
+
+            // Find the crash artefact (libFuzzer writes crash-<sha>).
+            let artefact = '(none)';
+            try {
+              const files = fs.readdirSync('fuzz/crashes')
+                .filter(f => f.startsWith(`${harness}-crash-`));
+              if (files.length) artefact = files.join(', ');
+            } catch (e) { /* ignore */ }
+
+            const title = `[fuzz-nightly] ${harness} crashed`;
+            const body = [
+              `**Harness:** \`${harness}\``,
+              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `**Crash artefact filename(s):** \`${artefact}\``,
+              ``,
+              `Crash artefacts are attached to the workflow run as`,
+              `\`${harness}-artefacts\` (14-day retention).`,
+              ``,
+              `Last 8KB of stderr/stdout:`,
+              '```',
+              log,
+              '```',
+              ``,
+              `Triage: download the artefact, save the \`crash-*\` input,`,
+              `replay locally with`,
+              `\`./fuzz/out/${harness} <crash-input>\`. Add the input to`,
+              `\`fuzz/corpus/${harness.replace('fuzz_', '')}/regression_*\``,
+              `once the underlying bug is fixed.`,
+            ].join('\n');
+
+            // Don't spam: if an open issue with the same title already
+            // exists, just add a comment with the new run link.
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'fuzz-crash',
+              per_page: 100,
+            });
+            const existing = issues.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Crash recurred — ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['fuzz-crash', 'bug'],
+              });
+            }
