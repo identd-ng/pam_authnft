@@ -32,13 +32,16 @@ Out of scope:
 
 ## Reporting
 
-Report privately via GitHub Security Advisories on the `identd-ng/pam_authnft`
-repository ("Report a vulnerability" tab under Security). Please include a
+Report privately via GitHub Security Advisories at
+<https://github.com/identd-ng/pam_authnft/security/advisories/new>
+("Report a vulnerability" tab under Security). Please include a
 minimal reproducer, kernel version, nftables version, and the PAM service
 stack (`/etc/pam.d/<service>`) in use.
 
 Public issues and pull requests are not the right channel for vulnerability
-reports.
+reports. Backup contact channels and any PGP details live in the
+RFC 9116 security.txt at
+<https://github.com/identd-ng/pam_authnft/blob/main/.well-known/security.txt>.
 
 ## Response timeline
 
@@ -60,11 +63,13 @@ the disclosure window unilaterally; the maintainer will rush a fix in
 parallel.
 
 Reports that are not acknowledged within 14 days SHOULD be re-sent or
-escalated via the email contact in `.well-known/security.txt`.
+escalated via the email contact in
+<https://github.com/identd-ng/pam_authnft/blob/main/.well-known/security.txt>.
 
 ## Incident response runbook
 
 The internal procedure followed for each report is documented in
-[docs/INCIDENT_RESPONSE.md](docs/INCIDENT_RESPONSE.md). It exists so
-that a maintainer-of-the-day handling their first incident has a clear
-path through triage → fix → disclosure → post-mortem.
+<https://github.com/identd-ng/pam_authnft/blob/main/docs/INCIDENT_RESPONSE.md>.
+It exists so that a maintainer-of-the-day handling their first
+incident has a clear path through triage → fix → disclosure →
+post-mortem.
