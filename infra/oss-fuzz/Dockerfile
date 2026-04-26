@@ -2,7 +2,7 @@
 # The base-builder image provides clang, compiler-rt/libFuzzer, and the
 # OSS-Fuzz build infrastructure. We only need to add the library
 # dependencies that pam_authnft links against.
-FROM gcr.io/oss-fuzz-base/base-builder
+FROM gcr.io/oss-fuzz-base/base-builder@sha256:93d14bc504056b4c48305fb1ece66d3ec2868ece07049aab83d94511f79c4063
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \

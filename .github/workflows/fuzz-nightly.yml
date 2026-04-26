@@ -59,7 +59,7 @@ jobs:
           - fuzz_socket_inode
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install dependencies
         run: |
@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload artefacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.harness }}-artefacts
           path: |
@@ -118,7 +118,7 @@ jobs:
 
       - name: File crash issue
         if: failure() && steps.fuzz.outputs.exit != '0'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
