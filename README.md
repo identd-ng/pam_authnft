@@ -157,7 +157,7 @@ and bob are matched by entirely different rules.
    │ chain session_alice_1127936      │         │ set session_alice_1127936_v4     │
    ├──────────────────────────────────┤         ├──────────────────────────────────┤
    │ socket cgroupv2 level 2          │ lookup  │ { "authnft.slice/                │
-   │   . ip saddr                     │ ──────▶ │     authnft-alice-1127936        │
+   │   . ip saddr                     │ ──────▶│     authnft-alice-1127936        │
    │   @session_alice_1127936_v4      │         │     .scope" . 192.0.2.1 }        │
    │   accept                         │         └──────────────────────────────────┘
    │ (loaded from alice's fragment    │
