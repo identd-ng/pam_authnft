@@ -242,7 +242,7 @@ flowchart LR
 
     subgraph kernel["Kernel + userspace primitives"]
         KR[Kernel keyring<br/>add_key/keyctl]
-        FS[/etc/authnft/users/<br/>fragments]
+        FS["/etc/authnft/users/<br/>fragments"]
         ENV[PAM env<br/>claims_env, AUTHNFT_CORRELATION]
     end
 
@@ -253,7 +253,7 @@ flowchart LR
 
     subgraph sinks["Consumers (read)"]
         NFT[nftables sets<br/>nft list]
-        JSON[/run/authnft/sessions/<br/>JSON files]
+        JSON["/run/authnft/sessions/<br/>JSON files"]
         JRNL[journald<br/>AUTHNFT_EVENT]
         SCOPE[systemd scopes<br/>systemctl]
     end
