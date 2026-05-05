@@ -385,7 +385,7 @@ sequenceDiagram
     E-->>A: "<serial>"
     A->>K: keyctl(READ, serial)
     K-->>A: payload bytes
-    A->>A: sanitize to [A-Za-z0-9_=,.:;/-]
+    A->>A: sanitize payload to safe charset
     A->>N: insert element with claims as comment
 ```
 
