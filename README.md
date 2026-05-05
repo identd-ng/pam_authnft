@@ -143,27 +143,27 @@ and bob are matched by entirely different rules.
    incoming packet
         │
         ▼
-   ┌──────────────────────────────┐
-   │  chain filter                │
-   │  hook input, priority filter-1│
-   ├──────────────────────────────┤
-   │  ct state established,related │ ──▶ pre-scope sockets, accept
-   │  jump session_alice_1127936   │ ──▶ alice's per-session chain
-   │  jump session_bob_4321        │ ──▶ bob's per-session chain
-   └──────────────┬───────────────┘
-                  │
-                  ▼   (alice's session chain)
-   ┌──────────────────────────────┐         ┌────────────────────────────────┐
-   │ chain session_alice_1127936   │         │ set session_alice_1127936_v4   │
-   ├──────────────────────────────┤         ├────────────────────────────────┤
-   │ socket cgroupv2 level 2       │ lookup  │ { "authnft.slice/              │
-   │   . ip saddr                  │ ──────▶ │     authnft-alice-1127936      │
-   │   @session_alice_1127936_v4   │         │     .scope" . 192.0.2.1 }      │
-   │   accept                      │         └────────────────────────────────┘
-   │ (loaded from alice's fragment │
-   │  with @session_v4 placeholder │
-   │  substituted at open_session) │
-   └──────────────────────────────┘
+   ┌──────────────────────────────────┐
+   │ chain filter                     │
+   │ hook input, priority filter - 1  │
+   ├──────────────────────────────────┤
+   │ ct state established,related     │ ──▶ pre-scope sockets, accept
+   │ jump session_alice_1127936       │ ──▶ alice's per-session chain
+   │ jump session_bob_4321            │ ──▶ bob's per-session chain
+   └─────────────────┬────────────────┘
+                     │
+                     ▼   (alice's session chain)
+   ┌──────────────────────────────────┐         ┌──────────────────────────────────┐
+   │ chain session_alice_1127936      │         │ set session_alice_1127936_v4     │
+   ├──────────────────────────────────┤         ├──────────────────────────────────┤
+   │ socket cgroupv2 level 2          │ lookup  │ { "authnft.slice/                │
+   │   . ip saddr                     │ ──────▶ │     authnft-alice-1127936        │
+   │   @session_alice_1127936_v4      │         │     .scope" . 192.0.2.1 }        │
+   │   accept                         │         └──────────────────────────────────┘
+   │ (loaded from alice's fragment    │
+   │  with @session_v4 placeholder    │
+   │  substituted at open_session)    │
+   └──────────────────────────────────┘
 
    key the set is matched on:
      socket's originating cgroup (set at socket creation)
