@@ -78,6 +78,104 @@ Session policy is inspectable with standard `nft` tooling
 (`nft list table inet authnft`); no `bpftool` or BPF program inspection
 required.
 
+### Lifecycle at a glance
+
+```mermaid
+sequenceDiagram
+    participant U as User (sshd)
+    participant P as PAM stack
+    participant A as pam_authnft
+    participant D as systemd (D-Bus)
+    participant N as nftables (kernel)
+    participant F as filesystem
+    participant J as journald
+
+    U->>P: open_session
+    P->>A: pam_sm_open_session
+    A->>A: validate PAM_USER, normalize PAM_RHOST
+    A->>A: apply seccomp-BPF allowlist
+    A->>D: StartTransientUnit (authnft-<user>-<pid>.scope)
+    D-->>A: scope created under authnft.slice
+    A->>A: construct cg_path, per-session chain/set names
+
+    Note over A,N: nft transaction 1
+    A->>N: add table + shared filter chain
+    A->>N: add ct state established,related accept (pre-scope sockets)
+    A->>N: add per-session chain
+    A->>N: add 3 per-session sets (_v4, _v6, _cg)
+    A->>N: add element { cg_path . src_ip } in selected set
+
+    Note over A,N: nft transaction 2
+    A->>N: add jump rule from filter to per-session chain
+    N-->>A: jump rule handle (stored for cleanup)
+
+    Note over A,N: nft transaction 3
+    A->>A: read /etc/authnft/users/<user>, validate ownership
+    A->>A: substitute @session_v4/v6/cg/chain placeholders
+    A->>N: execute substituted fragment
+
+    A->>F: write /run/authnft/sessions/<scope>.json
+    A->>J: AUTHNFT_EVENT=open (correlation token)
+    A-->>P: PAM_SUCCESS
+
+    Note over U,N: --- session active ---<br/>packets matched by socket cgroupv2 level 2
+
+    U->>P: close_session
+    P->>A: pam_sm_close_session
+    A->>N: delete jump rule (by handle)
+    A->>N: flush + delete per-session chain
+    A->>N: delete 3 per-session sets
+    A->>F: unlink session JSON
+    A->>J: AUTHNFT_EVENT=close (same correlation token)
+    A-->>P: PAM_SUCCESS
+```
+
+### Packet classification
+
+When a packet enters the kernel, nftables walks the `filter` chain. The
+first rule accepts established/related traffic (covering pre-scope
+sockets like the SSH control connection itself). New connections jump
+into a per-session chain; that chain's rules check the session's own
+per-session set. Each session has its own chain and its own set — alice
+and bob are matched by entirely different rules.
+
+```text
+   incoming packet
+        │
+        ▼
+   ┌──────────────────────────────┐
+   │  chain filter                │
+   │  hook input, priority filter-1│
+   ├──────────────────────────────┤
+   │  ct state established,related │ ──▶ pre-scope sockets, accept
+   │  jump session_alice_1127936   │ ──▶ alice's per-session chain
+   │  jump session_bob_4321        │ ──▶ bob's per-session chain
+   └──────────────┬───────────────┘
+                  │
+                  ▼   (alice's session chain)
+   ┌──────────────────────────────┐         ┌────────────────────────────────┐
+   │ chain session_alice_1127936   │         │ set session_alice_1127936_v4   │
+   ├──────────────────────────────┤         ├────────────────────────────────┤
+   │ socket cgroupv2 level 2       │ lookup  │ { "authnft.slice/              │
+   │   . ip saddr                  │ ──────▶ │     authnft-alice-1127936      │
+   │   @session_alice_1127936_v4   │         │     .scope" . 192.0.2.1 }      │
+   │   accept                      │         └────────────────────────────────┘
+   │ (loaded from alice's fragment │
+   │  with @session_v4 placeholder │
+   │  substituted at open_session) │
+   └──────────────────────────────┘
+
+   key the set is matched on:
+     socket's originating cgroup (set at socket creation)
+     . packet source IP
+```
+
+Sessions are isolated from each other: alice's per-session chain only
+ever references alice's per-session set, which contains exactly one
+element (her cg_path . src_ip). Removing that element at close_session,
+or deleting the per-session chain entirely, instantly stops her rules
+from firing — bob's chain and set are untouched.
+
 On session open:
 
 1. Normalises `PAM_RHOST`: IPv4/IPv6 literals pass through, zone suffixes
@@ -133,6 +231,65 @@ The module is not a plugin host. There is no shared-library ABI, no
 callback registry. Every contract uses an existing kernel or userspace
 primitive (PAM env, kernel keyring, filesystem, D-Bus, netlink, journald)
 with a narrow schema.
+
+```mermaid
+flowchart LR
+    subgraph producers["Producers (write)"]
+        IB[Identity broker<br/>OIDC PAM module]
+        CM[Config management<br/>Ansible/Salt/Puppet]
+        OPS[Operator]
+    end
+
+    subgraph kernel["Kernel + userspace primitives"]
+        KR[Kernel keyring<br/>add_key/keyctl]
+        FS[/etc/authnft/users/<br/>fragments]
+        ENV[PAM env<br/>claims_env, AUTHNFT_CORRELATION]
+    end
+
+    subgraph authnft["pam_authnft"]
+        OPEN[pam_sm_open_session]
+        CLOSE[pam_sm_close_session]
+    end
+
+    subgraph sinks["Consumers (read)"]
+        NFT[nftables sets<br/>nft list]
+        JSON[/run/authnft/sessions/<br/>JSON files]
+        JRNL[journald<br/>AUTHNFT_EVENT]
+        SCOPE[systemd scopes<br/>systemctl]
+    end
+
+    subgraph audience["Who reads what"]
+        FW[Firewall tooling]
+        SIEM[SIEM / SOC]
+        ORCH[Orchestrators]
+    end
+
+    IB -->|claims tag| KR
+    IB -->|correlation token| ENV
+    CM -->|writes| FS
+    OPS -->|writes| FS
+
+    KR --> OPEN
+    FS --> OPEN
+    ENV --> OPEN
+
+    OPEN --> NFT
+    OPEN --> JSON
+    OPEN --> JRNL
+    OPEN --> SCOPE
+
+    CLOSE --> NFT
+    CLOSE --> JRNL
+
+    NFT --> FW
+    JSON --> SIEM
+    JRNL --> SIEM
+    SCOPE --> ORCH
+```
+
+Producers (left) are independent of consumers (right). pam_authnft sits
+in the middle with no shared library or callback registry — every arrow
+is a documented kernel or userspace primitive.
 
 ## Quick start
 
@@ -196,6 +353,62 @@ time-limited fragment variants.
 | `rhost_policy=kernel` |  | Derive peer IP from the session process's own ESTABLISHED TCP socket via `NETLINK_SOCK_DIAG` (see `ss(8)`). Logs a warning on divergence with PAM_RHOST. Falls through to `lax` on lookup failure |
 | `claims_env=NAME` |  | Read PAM env var `NAME` for a kernel-keyring serial; embed the sanitized keyed payload in the nftables element comment. See [docs/INTEGRATIONS.txt](docs/INTEGRATIONS.txt) §2 |
 | `AUTHNFT_NO_SANDBOX=1` |  | Disable the seccomp sandbox. Debugging only |
+
+### Kernel keyring handoff (claims_env)
+
+When `claims_env=NAME` is set, an upstream PAM module that runs earlier
+in the same session can pass session metadata to pam_authnft through the
+Linux kernel keyring. The keyring is a kernel-managed key/value store
+scoped to the login session — see `keyrings(7)`. It is not a file, a
+socket, or shared memory: the kernel allocates the key, enforces the
+permissions, and tears it down automatically when the session ends.
+
+```mermaid
+sequenceDiagram
+    participant U as Upstream PAM module<br/>(producer)
+    participant K as Kernel keyring
+    participant E as PAM env
+    participant A as pam_authnft<br/>(consumer)
+    participant N as nftables
+
+    Note over U,A: Both modules run in the same PAM session,<br/>producer earlier in the stack than consumer
+
+    U->>K: add_key("user", "<desc>", payload, SESSION_KEYRING)
+    K-->>U: serial number
+    U->>K: keyctl(SET_TIMEOUT, serial, ttl)
+    U->>K: keyctl(SETPERM, POSSESSOR view/read/search)
+    U->>E: pam_putenv("NAME=<serial>")
+
+    Note over K: claims live in kernel,<br/>UID-locked, TTL-bounded
+
+    A->>E: pam_getenv("NAME")
+    E-->>A: "<serial>"
+    A->>K: keyctl(READ, serial)
+    K-->>A: payload bytes
+    A->>A: sanitize to [A-Za-z0-9_=,.:;/-]
+    A->>N: insert element with claims as comment
+```
+
+The producer requirements (key type, permissions, payload format,
+ordering of `SET_TIMEOUT` before `SETPERM`) are documented in
+[docs/INTEGRATIONS.txt §2](docs/INTEGRATIONS.txt). pam_authnft treats the
+payload as opaque printable ASCII — it does not parse structure, only
+sanitizes and embeds. This keeps the contract narrow and lets any
+producer (identity broker, AAA stack, custom module) participate without
+shared code.
+
+Why the keyring rather than a file or env var alone:
+
+- **Lifetime managed by the kernel.** When the session ends, the keyring
+  is destroyed and the claims disappear. No cleanup code needed.
+- **UID-locked at the kernel level.** Other processes on the host cannot
+  read another session's claims, even as root, without first acquiring
+  the keyring (POSSESSOR check).
+- **No filesystem footprint.** Nothing to write, sync, or unlink. No
+  race conditions, no leftover state on crash.
+- **Survives the sshd privsep fork.** Unlike shell env vars, kernel
+  keys remain readable across the auth-worker → session-worker
+  transition that happens inside sshd.
 
 ### PAM stack options
 
