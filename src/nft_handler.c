@@ -19,15 +19,18 @@
 static char *read_file(const char *path, size_t *out_len);
 
 /*
- * Fragment content validation. Reads the file whole and walks by '\n' to
- * avoid buffer-boundary verb truncation, then rejects:
- *   - Disallowed verbs: flush, delete, reset, list, rename, insert, replace,
- *     monitor
+ * Fragment content validation against a pre-read buffer. Walks the buffer
+ * by '\n' to avoid buffer-boundary verb truncation, then rejects:
+ *   - Disallowed verbs: flush, delete, destroy, reset, list, rename,
+ *     insert, replace, monitor
  *   - 'add rule inet authnft filter ...' targeting the shared filter chain;
  *     fragments must target the per-session chain via the @session_chain
  *     placeholder
  *   - include paths outside /etc/authnft/, relative paths, '..' segments,
  *     and glob characters
+ *
+ * `path` is used only for log messages — the validator never re-opens it,
+ * so callers can pass a synthetic name when validating in-memory content.
  *
  * Trust model: fragments are admin-authored (root-owned, not world-writable;
  * checked by stat(2) earlier). This validator is defense-in-depth and a
@@ -36,24 +39,19 @@ static char *read_file(const char *path, size_t *out_len);
  *
  * Returns 0 if valid, -1 if rejected (reason logged via pam_syslog).
  */
-#ifndef FUZZ_BUILD
-static
-#endif
-int validate_fragment_content(pam_handle_t *pamh, const char *path) {
+static int validate_fragment_buf(pam_handle_t *pamh, const char *path,
+                                  const char *buf, size_t buf_len) {
     static const char *bad_verbs[] = {
-        "flush", "delete", "reset", "list", "rename",
+        "flush", "delete", "destroy", "reset", "list", "rename",
         "insert", "replace", "monitor", NULL
     };
+    /* `destroy` covers the same surface as `delete` (TABLE/CHAIN/RULE/SET/
+     * MAP/ELEMENT/FLOWTABLE/COUNTER/QUOTA/CT/LIMIT/SECMARK/SYNPROXY/
+     * TUNNEL — see nftables parser_bison.y) but with cmd_alloc(CMD_DESTROY)
+     * semantics that tolerate ENOENT silently. Without it, a fragment
+     * could bypass the `delete` block via `destroy table inet authnft`. */
     static const char shared_chain_prefix[] = "add rule inet " TABLE_NAME " filter";
     static const size_t shared_chain_prefix_len = sizeof(shared_chain_prefix) - 1;
-
-    /* Read the whole file in one shot. read_file caps at 64 KiB so a
-     * fragment cannot exhaust memory; reading whole-file eliminates the
-     * fgets-boundary bypass where a forbidden verb straddled the read
-     * buffer's edge and was missed on both halves. */
-    size_t buf_len = 0;
-    char *buf = read_file(path, &buf_len);
-    if (!buf) return -1;
 
     int rc = 0;
     int lineno = 1;
@@ -158,6 +156,29 @@ next:
     }
 
 out:
+    return rc;
+}
+
+/*
+ * Path-accepting wrapper. Reads the file once via read_file, then runs
+ * validate_fragment_buf. Used by the fuzzer harness (which presents
+ * input as a path via memfd_create + /proc/self/fd) and by callers
+ * that don't already have the buffer in hand.
+ *
+ * Production callers in nft_handler_setup pre-read the fragment via
+ * read_file and call validate_fragment_buf directly, then reuse the
+ * same buffer for substitute_placeholders. That eliminates a redundant
+ * file read and closes the TOCTOU window between validation and
+ * substitution.
+ */
+#ifndef FUZZ_BUILD
+static __attribute__((unused))
+#endif
+int validate_fragment_content(pam_handle_t *pamh, const char *path) {
+    size_t buf_len = 0;
+    char *buf = read_file(path, &buf_len);
+    if (!buf) return -1;
+    int rc = validate_fragment_buf(pamh, path, buf, buf_len);
     free(buf);
     return rc;
 }
@@ -378,8 +399,24 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         return PAM_AUTH_ERR;
     }
 
-    /* Content validation: verb scan, include path check, reserved defines. */
-    if (validate_fragment_content(pamh, user_conf_path) < 0) {
+    /* Read the fragment once, reuse the buffer for both validation and
+     * placeholder substitution below. Eliminates a redundant fopen and
+     * closes the TOCTOU window between validate-by-path and read-by-path
+     * where an admin could have rewritten the file between checks. */
+    size_t frag_len = 0;
+    char *frag_buf = read_file(user_conf_path, &frag_len);
+    if (!frag_buf) {
+        pam_syslog(pamh, LOG_ERR,
+                   "authnft: could not read fragment %s", user_conf_path);
+        authnft_audit_fragment_reject(user, "content", user_conf_path);
+        pam_error(pamh, "authnft: fragment %s could not be read.",
+                  user_conf_path);
+        return PAM_AUTH_ERR;
+    }
+
+    /* Content validation: verb scan, include path check. */
+    if (validate_fragment_buf(pamh, user_conf_path, frag_buf, frag_len) < 0) {
+        free(frag_buf);
         authnft_audit_fragment_reject(user, "content", user_conf_path);
         pam_error(pamh, "authnft: fragment %s rejected by content validator.",
                   user_conf_path);
@@ -508,9 +545,21 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         return PAM_SERVICE_ERR;
     }
 
+    /* nft prints rule output as: <body> [comment "..."] # handle <id>.
+     * If a comment ever contains the substring "# handle N", strstr would
+     * find that first and sscanf would extract the wrong number. The jump
+     * rule we just added has no comment, but a future maintainer adding
+     * one (e.g., to encode scope_unit for cleanup hardening) would silently
+     * break this parser. Scan for the LAST occurrence — the real handle
+     * marker is always last on the line. See nftables rule.c:520-521 for
+     * the print order: comment, then handle. */
     const char *out = nft_ctx_get_output_buffer(ctx);
     uint64_t handle = 0;
-    const char *h = out ? strstr(out, "# handle ") : NULL;
+    const char *h = NULL;
+    if (out) {
+        for (const char *p = out, *q; (q = strstr(p, "# handle ")); p = q + 9)
+            h = q;
+    }
     if (!h || sscanf(h, "# handle %" SCNu64, &handle) != 1 || handle == 0) {
         pam_syslog(pamh, LOG_ERR,
                    "authnft: could not parse jump rule handle from nft output");
@@ -547,16 +596,11 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
      * directly and do not receive substitution. This is documented as
      * a design choice: per-session rules use placeholders; shared
      * includes use the shared filter chain with accept-only rules.
+     *
+     * frag_buf was read once at the top of this function (just before
+     * validate_fragment_buf) and is reused here unchanged. No second
+     * file read; no TOCTOU window between validation and substitution.
      */
-    size_t frag_len = 0;
-    char *frag_buf = read_file(user_conf_path, &frag_len);
-    if (!frag_buf) {
-        pam_syslog(pamh, LOG_ERR,
-                   "authnft: could not read fragment %s", user_conf_path);
-        nft_partial_cleanup(ctx, sd);
-        nft_ctx_free(ctx);
-        return PAM_AUTH_ERR;
-    }
 
     /* Set placeholders keep the @ prefix (nft set-reference syntax).
      * Chain placeholder drops it (chain names are bare identifiers). */

@@ -12,10 +12,13 @@
 
 Linux has no built-in way to bind packet filter rules to an authenticated
 user session and revoke them at logout. pam_authnft fills that gap. Rules
-are removed atomically when `close_session` runs in the same PAM handle
-that opened the session; if the handle is broken (daemon crash, OOM, kernel
-panic, certain sshd config variants), a 24-hour element timeout is the
-safety net.
+are removed by `close_session` when the PAM handle that opened the session
+sees the close; a 24-hour element timeout is the safety net for cases where
+it doesn't. Cleanup falls to that timeout when `close_session` does not run
+in the same process as `open_session` (currently the case under OpenSSH
+privsep — see
+[#35](https://github.com/identd-ng/pam_authnft/issues/35)) and against
+daemon crash, OOM, kernel panic, or hard reset.
 
 OpenBSD's pf has had this for years — named anchors loaded per-session via
 pfctl, torn down when the session ends. pam_authnft brings the same model
@@ -60,10 +63,13 @@ matters most:
   between the authentication decision and the firewall rule.
 - **Bastion hosts fronting containers** — users authenticate via PAM (SSH,
   OIDC), pam_authnft restricts which container IPs and ports that session
-  can reach. The match works inside containers on kernels >= 6.12 (namespace-
-  aware cgroupv2 offset). For policy enforcement *inside* Kubernetes pods
-  (no PAM session), BPF cgroup programs are the natural path — see
-  [docs/TODO.txt](docs/TODO.txt).
+  can reach. The match works inside containers on kernels with the
+  namespace-aware cgroupv2 offset: mainline >= 6.11, and the LTS
+  backports 6.6 >= 6.6.53 and 6.1 >= 6.1.112 (commit 7f3287db6543, plus
+  the follow-up null-deref fix 7052622fccb1; both released September 2024).
+  RHEL 9 / Rocky 9 / Alma 9 kernels (5.14-derived) do not have it. For
+  policy enforcement *inside* Kubernetes pods (no PAM session), BPF cgroup
+  programs are the natural path — see [docs/TODO.txt](docs/TODO.txt).
 
 ## How it works
 
