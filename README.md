@@ -11,7 +11,11 @@
 [![License: GPL v2+](https://img.shields.io/badge/license-GPL--2.0--or--later-blue.svg)](LICENSE)
 
 Linux has no built-in way to bind packet filter rules to an authenticated
-user session and revoke them atomically at logout. pam_authnft fills that gap.
+user session and revoke them at logout. pam_authnft fills that gap. Rules
+are removed atomically when `close_session` runs in the same PAM handle
+that opened the session; if the handle is broken (daemon crash, OOM, kernel
+panic, certain sshd config variants), a 24-hour element timeout is the
+safety net.
 
 OpenBSD's pf has had this for years — named anchors loaded per-session via
 pfctl, torn down when the session ends. pam_authnft brings the same model
