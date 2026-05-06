@@ -601,4 +601,129 @@ fi
 pass "10.14: failed open_session rolled back nft state and scope cleanly"
 nft delete table inet authnft 2>/dev/null || true
 
+# 10.15: Privsep close_session boundary — the regression test for issue #35.
+# pamtester is single-process, so 10.2/10.6/10.14 cannot exercise the
+# OpenSSH privsep model (open_session in the privsep child, close_session
+# in the monitor). This stage drives a real sshd loopback session and
+# asserts the per-session nft state and the systemd transient scope are
+# both absent after the client disconnects.
+#
+# Without the AUTHNFT_SESSION env carry, this test fails: pam_set_data
+# from the child is invisible to the monitor, the close-side fallback
+# returns PAM_SUCCESS without cleaning up, and the chain/sets/scope leak
+# until the 24h timeout. With the carry, close_session decodes the env,
+# re-validates fields, and runs cleanup against the same state the open
+# created.
+nft delete table inet authnft 2>/dev/null || true
+printf "${YELLOW}10.15: Privsep close_session boundary (real sshd loopback)${RESET}\n"
+
+if ! command -v sshd >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1 || \
+   ! command -v ssh >/dev/null 2>&1; then
+    pass "10.15: [SKIP] sshd / ssh-keygen / ssh not available on this host"
+else
+    # Stage 10.15 needs the test user to be able to exec something across
+    # the SSH session. The default test user has nologin/false as shell;
+    # swap to /bin/sh for the duration of this stage and restore at the end.
+    SAVED_SHELL=$(getent passwd "$TEST_USER" | cut -d: -f7)
+    usermod -s /bin/sh "$TEST_USER" 2>/dev/null || true
+
+    # Restore the shell on any path out of this stage. The outer EXIT trap
+    # already handles userdel; this nested trap chains a shell-restore in
+    # front of it. Also kill any lingering sshd we started.
+    SSH_DIR=$(mktemp -d)
+    SSHD_PID_FILE="$SSH_DIR/sshd.pid"
+    s1015_cleanup() {
+        if [[ -f "$SSHD_PID_FILE" ]]; then
+            kill "$(cat "$SSHD_PID_FILE")" 2>/dev/null || true
+            wait "$(cat "$SSHD_PID_FILE")" 2>/dev/null || true
+        fi
+        usermod -s "$SAVED_SHELL" "$TEST_USER" 2>/dev/null || true
+        rm -rf "$SSH_DIR"
+    }
+    trap 's1015_cleanup; cleanup' EXIT
+
+    SSHD_PORT=22222
+    HOST_KEY="$SSH_DIR/host_ed25519"
+    CLIENT_KEY="$SSH_DIR/client_ed25519"
+    AUTHKEYS_DIR=$(getent passwd "$TEST_USER" | cut -d: -f6)/.ssh
+
+    ssh-keygen -t ed25519 -N '' -f "$HOST_KEY" -q
+    ssh-keygen -t ed25519 -N '' -f "$CLIENT_KEY" -q
+    mkdir -p "$AUTHKEYS_DIR"
+    cat "$CLIENT_KEY.pub" > "$AUTHKEYS_DIR/authorized_keys"
+    chown -R "$TEST_USER:$TEST_USER" "$AUTHKEYS_DIR"
+    chmod 700 "$AUTHKEYS_DIR"
+    chmod 600 "$AUTHKEYS_DIR/authorized_keys"
+
+    # Per-test sshd config. Uses the existing test PAM service so
+    # pam_authnft is in the session stack.
+    cat > "$SSH_DIR/sshd_config" <<EOF
+Port $SSHD_PORT
+ListenAddress 127.0.0.1
+HostKey $HOST_KEY
+PidFile $SSHD_PID_FILE
+UsePAM yes
+PasswordAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitUserEnvironment no
+StrictModes no
+LogLevel DEBUG3
+EOF
+
+    # Reinstall a valid fragment (10.14 set a deliberately broken one).
+    cat > "$FRAGMENT" <<'NFT'
+add rule inet authnft @session_chain socket cgroupv2 level 2 . ip saddr @session_v4 accept
+NFT
+    chown root:root "$FRAGMENT"
+    chmod 644 "$FRAGMENT"
+
+    /usr/sbin/sshd -f "$SSH_DIR/sshd_config" -E "$SSH_DIR/sshd.log"
+    sleep 0.4
+
+    if [[ ! -s "$SSHD_PID_FILE" ]]; then
+        echo "sshd failed to start; log tail:" >&2
+        tail -20 "$SSH_DIR/sshd.log" >&2
+        pass "10.15: [SKIP] sshd refused to start (port in use? selinux?)"
+    else
+        # Drive a connection that opens a session, runs `true`, exits.
+        # That is enough for sshd to call pam_open_session and
+        # pam_close_session, which exercises the privsep boundary.
+        ssh -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o BatchMode=yes \
+            -o ConnectTimeout=5 \
+            -i "$CLIENT_KEY" -p "$SSHD_PORT" \
+            "$TEST_USER@127.0.0.1" true 2>"$SSH_DIR/ssh.err" || true
+
+        # Give sshd a moment to run its postauth teardown (mm_answer_term
+        # → sshpam_cleanup → pam_close_session).
+        sleep 0.5
+
+        # Inspect state. If close_session ran the cleanup correctly,
+        # there should be no per-session chain or set in the table.
+        TABLE_STATE=$(nft list table inet authnft 2>/dev/null || true)
+        if echo "$TABLE_STATE" | grep -qE '(chain|set) session_'; then
+            echo "$TABLE_STATE" >&2
+            echo "sshd log tail:" >&2
+            tail -50 "$SSH_DIR/sshd.log" >&2
+            fail "10.15: per-session nft state leaked after sshd disconnect (privsep close_session boundary, issue #35)"
+        fi
+
+        # And no transient scope under authnft.slice.
+        LEAKED_SCOPE=$(systemctl --no-legend list-units --all --type=scope \
+            "authnft-$TEST_USER-*.scope" 2>/dev/null \
+            | awk '{print $1}' | grep -v '^$' | head -1)
+        if [[ -n "$LEAKED_SCOPE" ]]; then
+            echo "leaked scope: $LEAKED_SCOPE" >&2
+            systemctl stop "$LEAKED_SCOPE" 2>/dev/null || true
+            fail "10.15: systemd scope leaked after sshd disconnect (privsep close_session boundary, issue #35)"
+        fi
+
+        pass "10.15: per-session state cleaned up across sshd privsep boundary"
+    fi
+fi
+nft delete table inet authnft 2>/dev/null || true
+
 printf "\n${BLUE}>>> INTEGRATION TESTS COMPLETE${RESET}\n"
