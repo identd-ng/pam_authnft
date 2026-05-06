@@ -236,7 +236,16 @@ char *substitute_placeholders(const char *src, size_t src_len,
     while (i < src_len) {
         char c = src[i];
 
-        if (c == '\n') { in_comment = 0; }
+        /* Reset both in_comment and in_quote at line boundaries.
+         * nftables does not support multi-line "..." string literals in
+         * fragments, so treating quoting as line-local is correct. The
+         * earlier line-aware reset for in_comment but not in_quote
+         * meant an unterminated " on one line silently disabled
+         * placeholder substitution for the rest of the file — a
+         * confusing failure mode. The fragment then fails libnftables
+         * syntax check (because @session_v4 etc. are unsubstituted),
+         * which is fail-safe but hides the cause. */
+        if (c == '\n') { in_comment = 0; in_quote = 0; }
         if (!in_quote && c == '#') { in_comment = 1; }
         if (!in_comment && c == '"') { in_quote = !in_quote; }
 
@@ -354,17 +363,41 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
     DEBUG_PRINT("nft_handler_setup: user=%s cg=%s chain=%s",
                 user, sd->cg_path, sd->chain_name);
 
-    /* Group membership check. */
+    /* Group membership check via getgrouplist(3).
+     *
+     * Earlier code walked grp->gr_mem from getgrnam("authnft"). On hosts
+     * with SSSD or sssd-ldap and the (default) enumerate=false setting,
+     * gr_mem is empty even when the user is a legitimate member through
+     * directory memberOf. The user would silently fall through to
+     * "not in group, passing through" and never get the per-session
+     * firewall rules — a fail-safe but surprising failure mode.
+     *
+     * getgrouplist(3) consults the full NSS resolution (compat, files,
+     * sss, ldap, ...) and returns every group the user is in, including
+     * the primary. Match the authnft GID against that list. */
     struct group *grp = getgrnam("authnft");
     int in_group = 0;
     if (grp) {
         struct passwd *pw = getpwnam(user);
         if (pw) {
-            if (pw->pw_gid == grp->gr_gid) in_group = 1;
-            else {
-                for (char **m = grp->gr_mem; *m != NULL; m++) {
-                    if (strcmp(*m, user) == 0) { in_group = 1; break; }
+            int ngroups = 64;
+            gid_t groups[64];
+            int rc = getgrouplist(user, pw->pw_gid, groups, &ngroups);
+            if (rc < 0) {
+                /* Buffer too small — user belongs to >64 groups. Allocate
+                 * the size getgrouplist reported and retry once. */
+                gid_t *big = calloc((size_t)ngroups, sizeof(gid_t));
+                if (big) {
+                    rc = getgrouplist(user, pw->pw_gid, big, &ngroups);
+                    if (rc >= 0) {
+                        for (int i = 0; i < ngroups; i++)
+                            if (big[i] == grp->gr_gid) { in_group = 1; break; }
+                    }
+                    free(big);
                 }
+            } else {
+                for (int i = 0; i < ngroups; i++)
+                    if (groups[i] == grp->gr_gid) { in_group = 1; break; }
             }
         }
     }
@@ -515,7 +548,26 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
     DEBUG_PRINT("nft call 1 (infra+sets):\n%s", cmd);
     if (nft_run_cmd_from_buffer(ctx, cmd) != 0) {
         const char *err_msg = nft_ctx_get_error_buffer(ctx);
-        pam_syslog(pamh, LOG_ERR, "authnft: setup call 1 failed: %s", err_msg);
+        /* "chain already exists" / "set already exists" on call 1 has a
+         * specific operational cause: a previous session for the same
+         * (user, pid) leaked its per-session state (privsep close-session
+         * leak, OOM-killed daemon, kernel panic, etc.) and the 24h
+         * element timeout has not yet evicted it. PIDs recycle on busy
+         * hosts within minutes; a user opening a new session that lands
+         * on the same PID hits this path. Surface it distinctly so an
+         * operator can recognize the symptom and clean up by hand
+         * (`nft delete chain inet authnft session_<user>_<pid>` and the
+         * matching sets). */
+        if (err_msg && (strstr(err_msg, "exists") || strstr(err_msg, "EEXIST"))) {
+            pam_syslog(pamh, LOG_ERR,
+                       "authnft: setup call 1 failed (per-session state for "
+                       "%s/%s already present — likely PID-recycle after a "
+                       "leaked session; check `nft list table inet authnft` "
+                       "for stale chain/sets): %s",
+                       user, sd->chain_name, err_msg);
+        } else {
+            pam_syslog(pamh, LOG_ERR, "authnft: setup call 1 failed: %s", err_msg);
+        }
         nft_ctx_free(ctx);
         return PAM_SERVICE_ERR;
     }

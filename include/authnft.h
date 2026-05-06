@@ -75,11 +75,11 @@ typedef struct {
 /*
  * nft_handler_setup:
  * Checks 'authnft' group membership, validates the user's root-owned fragment
- * (verb scan, include-path check, reserved-define check), creates the
- * per-session chain and three per-session sets, inserts the session element,
- * captures the jump-rule handle, and loads the fragment with nftables
- * `define` variables for the four session placeholders ($session_v4,
- * $session_v6, $session_cg, $session_chain).
+ * (verb scan, include-path check), creates the per-session chain and three
+ * per-session sets, inserts the session element, captures the jump-rule
+ * handle, and loads the fragment with nftables placeholders substituted
+ * for the four per-session names (@session_v4, @session_v6, @session_cg,
+ * @session_chain).
  *
  * On success, sd->jump_handle is populated. On failure, any partially
  * created nftables state is best-effort cleaned up.

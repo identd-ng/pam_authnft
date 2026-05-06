@@ -58,6 +58,12 @@ int sandbox_apply(pam_handle_t *pamh) {
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(getdents64), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(fcntl), 0);
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 0);
+    /* Session-identity file is fchown'd to root:authnft after open
+     * so members of the authnft group can read it without world-readable
+     * leakage of claims_tag. fchown on an fd we opened ourselves is the
+     * minimum-surface form (no path lookup, no race). See
+     * src/session_file.c. */
+    (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(fchown), 0);
 
     /* Sockets — AF_NETLINK (libnftables/libmnl) + AF_UNIX (sd-bus) */
     (void)seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(socket), 0);

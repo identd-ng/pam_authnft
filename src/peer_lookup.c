@@ -249,17 +249,22 @@ int peer_lookup_tcp(pam_handle_t *pamh, pid_t pid, char *out, size_t out_sz) {
                    (int)pid, INODES_CAP);
     }
 
-    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
-    if (fd < 0) return 0;
-
+    /* Fresh netlink socket per address family. Reusing a single socket
+     * for back-to-back AF_INET6 then AF_INET queries can leave bytes from
+     * the v6 response in the kernel queue when the v4 read starts; the
+     * scan loop would consume v6 replies under the v4 query and miss the
+     * actual v4 socket match. Two short-lived sockets are simpler and
+     * avoid every flavor of buffered-leftover bug. */
     int found = 0;
     for (int i = 0; i < 2 && !found; i++) {
         int family = (i == 0) ? AF_INET6 : AF_INET;
+        int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+        if (fd < 0) continue;
         if (send_diag_request(fd, family) == 0 &&
             scan_diag_reply(fd, inodes, n, out, out_sz) == 1) {
             found = 1;
         }
+        close(fd);
     }
-    close(fd);
     return found;
 }
