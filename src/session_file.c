@@ -21,8 +21,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -91,12 +93,38 @@ int session_file_write(pam_handle_t *pamh, const authnft_session_t *sd,
         return -1;
     }
 
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    /* 0640 root:authnft so the file is readable only by root and members
+     * of the authnft group. claims_tag may carry token-derived material
+     * (JTI, scope, session correlator) that is not derivable from /proc,
+     * last, or utmp; world-readable would leak it. Other fields (user,
+     * cg_path, remote_ip) are recoverable from the systemd scope and
+     * /proc and so are not the privacy delta — but the conservative
+     * default is to gate the whole record on authnft group membership.
+     *
+     * If the authnft group does not exist (package preinst hasn't run,
+     * group was manually deleted, etc.) we still create the file with
+     * mode 0640 owned by root:root — readable only by root, which is
+     * stricter than the previous 0644 default. */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0640);
     if (fd < 0) {
         if (pamh) pam_syslog(pamh, LOG_WARNING,
                              "authnft: session file open(%s) failed: %m", tmp);
         return -1;
     }
+
+    struct group *grp = getgrnam("authnft");
+    if (grp) {
+        if (fchown(fd, 0 /* root */, grp->gr_gid) < 0 && pamh) {
+            pam_syslog(pamh, LOG_WARNING,
+                       "authnft: session file fchown(root:authnft) failed "
+                       "on %s: %m — leaving owner as root:root", tmp);
+        }
+    } else if (pamh) {
+        pam_syslog(pamh, LOG_DEBUG,
+                   "authnft: 'authnft' group not present — session file %s "
+                   "stays root:root mode 0640 (root-only readable)", tmp);
+    }
+
     ssize_t w = write(fd, json, (size_t)n);
     close(fd);
     if (w != n) {
