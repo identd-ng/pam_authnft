@@ -19,11 +19,19 @@
  * after sandbox_apply() returns are included. execve(2) appears in the
  * trace but originates from pamtester's own startup before dlopen() loads
  * this module — it is intentionally excluded.
+ *
+ * Bypass policy: this function unconditionally installs the filter.
+ * Bypass for debug/trace is the caller's decision — see
+ * is_debug_bypass_requested() in pam_entry.c which checks
+ * AUTHNFT_NO_SANDBOX (env or PAM arg) and logs the bypass at LOG_DEBUG.
+ * Direct callers (e.g., the unit-test harness) get the sandbox applied
+ * unconditionally; this is intentional so a stray AUTHNFT_NO_SANDBOX=1
+ * in a developer's environment cannot silently turn the seccomp tests
+ * into no-ops.
  */
 
 int sandbox_apply(pam_handle_t *pamh) {
     (void)pamh;
-    if (getenv("AUTHNFT_NO_SANDBOX")) return 0;
     scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_KILL);
     if (!ctx) return -1;
 

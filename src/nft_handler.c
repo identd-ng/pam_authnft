@@ -14,40 +14,69 @@
 #include <pwd.h>
 #include <string.h>
 
+/* Forward-declared: defined later in this file. read_file caps at
+ * 64 KiB and is also used by substitute_placeholders. */
+static char *read_file(const char *path, size_t *out_len);
+
 /*
- * Fragment content validation. Reads the file line by line and rejects:
- *   - Disallowed verbs: flush, delete, reset, list, rename
- *   - include paths outside /etc/authnft/, relative paths, glob chars
+ * Fragment content validation against a pre-read buffer. Walks the buffer
+ * by '\n' to avoid buffer-boundary verb truncation, then rejects:
+ *   - Disallowed verbs: flush, delete, destroy, reset, list, rename,
+ *     insert, replace, monitor
+ *   - 'add rule inet authnft filter ...' targeting the shared filter chain;
+ *     fragments must target the per-session chain via the @session_chain
+ *     placeholder
+ *   - include paths outside /etc/authnft/, relative paths, '..' segments,
+ *     and glob characters
+ *
+ * `path` is used only for log messages — the validator never re-opens it,
+ * so callers can pass a synthetic name when validating in-memory content.
+ *
+ * Trust model: fragments are admin-authored (root-owned, not world-writable;
+ * checked by stat(2) earlier). This validator is defense-in-depth and a
+ * typo-catcher; it is NOT a sandbox for untrusted input. See
+ * docs/INTEGRATIONS.txt §4 for the full producer trust contract.
  *
  * Returns 0 if valid, -1 if rejected (reason logged via pam_syslog).
  */
-#ifndef FUZZ_BUILD
-static
-#endif
-int validate_fragment_content(pam_handle_t *pamh, const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;
-
+static int validate_fragment_buf(pam_handle_t *pamh, const char *path,
+                                  const char *buf, size_t buf_len) {
     static const char *bad_verbs[] = {
-        "flush", "delete", "reset", "list", "rename", NULL
+        "flush", "delete", "destroy", "reset", "list", "rename",
+        "insert", "replace", "monitor", NULL
     };
+    /* `destroy` covers the same surface as `delete` (TABLE/CHAIN/RULE/SET/
+     * MAP/ELEMENT/FLOWTABLE/COUNTER/QUOTA/CT/LIMIT/SECMARK/SYNPROXY/
+     * TUNNEL — see nftables parser_bison.y) but with cmd_alloc(CMD_DESTROY)
+     * semantics that tolerate ENOENT silently. Without it, a fragment
+     * could bypass the `delete` block via `destroy table inet authnft`. */
+    static const char shared_chain_prefix[] = "add rule inet " TABLE_NAME " filter";
+    static const size_t shared_chain_prefix_len = sizeof(shared_chain_prefix) - 1;
 
-    char line[1024];
-    int lineno = 0;
     int rc = 0;
+    int lineno = 1;
+    const char *p = buf;
+    const char *end = buf + buf_len;
 
-    while (fgets(line, sizeof(line), f)) {
-        lineno++;
-        const char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '#' || *p == '\0' || *p == '\n') continue;
+    while (p < end) {
+        const char *line_end = memchr(p, '\n', (size_t)(end - p));
+        if (!line_end) line_end = end;
+        size_t line_len = (size_t)(line_end - p);
 
-        /* Check disallowed verbs (first token on the line). */
+        /* Skip leading whitespace */
+        const char *t = p;
+        while (t < line_end && (*t == ' ' || *t == '\t')) t++;
+        size_t tlen = (size_t)(line_end - t);
+
+        /* Skip empty lines and comments */
+        if (tlen == 0 || *t == '#') goto next;
+
+        /* Disallowed-verb check. Verb match requires a word boundary
+         * (space/tab/end-of-line) so 'flushy' wouldn't trip 'flush'. */
         for (int i = 0; bad_verbs[i]; i++) {
             size_t vlen = strlen(bad_verbs[i]);
-            if (strncmp(p, bad_verbs[i], vlen) == 0 &&
-                (p[vlen] == ' ' || p[vlen] == '\t' || p[vlen] == '\n' ||
-                 p[vlen] == '\0')) {
+            if (tlen >= vlen && memcmp(t, bad_verbs[i], vlen) == 0 &&
+                (tlen == vlen || t[vlen] == ' ' || t[vlen] == '\t')) {
                 pam_syslog(pamh, LOG_ERR,
                            "authnft: fragment %s:%d uses disallowed verb '%s'",
                            path, lineno, bad_verbs[i]);
@@ -56,29 +85,60 @@ int validate_fragment_content(pam_handle_t *pamh, const char *path) {
             }
         }
 
-        /* Check include paths: must be absolute, under /etc/authnft/,
+        /* Reject 'add rule inet authnft filter ...' — fragments must target
+         * the per-session chain via @session_chain. The shared filter chain
+         * is owned by pam_authnft; any rule a fragment installs there
+         * persists across sessions and affects every other session. */
+        if (tlen >= shared_chain_prefix_len &&
+            memcmp(t, shared_chain_prefix, shared_chain_prefix_len) == 0 &&
+            (tlen == shared_chain_prefix_len ||
+             t[shared_chain_prefix_len] == ' ' ||
+             t[shared_chain_prefix_len] == '\t')) {
+            pam_syslog(pamh, LOG_ERR,
+                       "authnft: fragment %s:%d targets shared 'filter' chain; "
+                       "fragments must target the per-session chain via "
+                       "the @session_chain placeholder", path, lineno);
+            rc = -1;
+            goto out;
+        }
+
+        /* include path validation: absolute, under /etc/authnft/, no '..',
          * no glob characters. */
-        if (strncmp(p, "include", 7) == 0 &&
-            (p[7] == ' ' || p[7] == '\t' || p[7] == '"')) {
-            const char *q = p + 7;
-            while (*q == ' ' || *q == '\t') q++;
-            if (*q == '"') q++;
-            if (*q != '/') {
+        if (tlen >= 8 && memcmp(t, "include", 7) == 0 &&
+            (t[7] == ' ' || t[7] == '\t' || t[7] == '"')) {
+            const char *q = t + 7;
+            while (q < line_end && (*q == ' ' || *q == '\t')) q++;
+            if (q < line_end && *q == '"') q++;
+
+            if (q >= line_end || *q != '/') {
                 pam_syslog(pamh, LOG_ERR,
                            "authnft: fragment %s:%d uses relative include path",
                            path, lineno);
                 rc = -1;
                 goto out;
             }
-            if (strncmp(q, "/etc/authnft/", 13) != 0) {
+            if ((size_t)(line_end - q) < 13 ||
+                memcmp(q, "/etc/authnft/", 13) != 0) {
                 pam_syslog(pamh, LOG_ERR,
                            "authnft: fragment %s:%d includes path outside "
                            "/etc/authnft/", path, lineno);
                 rc = -1;
                 goto out;
             }
-            /* Reject glob characters in include path. */
-            for (const char *g = q; *g && *g != '"' && *g != '\n'; g++) {
+            /* Reject '..' segments anywhere in the path. A literal '..'
+             * preceded by '/' or path start, followed by '/' or path
+             * end, escapes the /etc/authnft/ prefix check. */
+            for (const char *g = q; g < line_end && *g != '"'; g++) {
+                if (*g == '.' && g + 1 < line_end && g[1] == '.' &&
+                    (g == q || g[-1] == '/') &&
+                    (g + 2 >= line_end || g[2] == '/' ||
+                     g[2] == '"' || g[2] == ' ' || g[2] == '\t')) {
+                    pam_syslog(pamh, LOG_ERR,
+                               "authnft: fragment %s:%d include path "
+                               "contains '..' segment", path, lineno);
+                    rc = -1;
+                    goto out;
+                }
                 if (*g == '*' || *g == '?' || *g == '[') {
                     pam_syslog(pamh, LOG_ERR,
                                "authnft: fragment %s:%d include path contains "
@@ -88,10 +148,38 @@ int validate_fragment_content(pam_handle_t *pamh, const char *path) {
                 }
             }
         }
+
+next:
+        p = line_end + (line_end < end ? 1 : 0);
+        lineno++;
+        (void)line_len;
     }
 
 out:
-    fclose(f);
+    return rc;
+}
+
+/*
+ * Path-accepting wrapper. Reads the file once via read_file, then runs
+ * validate_fragment_buf. Used by the fuzzer harness (which presents
+ * input as a path via memfd_create + /proc/self/fd) and by callers
+ * that don't already have the buffer in hand.
+ *
+ * Production callers in nft_handler_setup pre-read the fragment via
+ * read_file and call validate_fragment_buf directly, then reuse the
+ * same buffer for substitute_placeholders. That eliminates a redundant
+ * file read and closes the TOCTOU window between validation and
+ * substitution.
+ */
+#ifndef FUZZ_BUILD
+static __attribute__((unused))
+#endif
+int validate_fragment_content(pam_handle_t *pamh, const char *path) {
+    size_t buf_len = 0;
+    char *buf = read_file(path, &buf_len);
+    if (!buf) return -1;
+    int rc = validate_fragment_buf(pamh, path, buf, buf_len);
+    free(buf);
     return rc;
 }
 
@@ -311,8 +399,24 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         return PAM_AUTH_ERR;
     }
 
-    /* Content validation: verb scan, include path check, reserved defines. */
-    if (validate_fragment_content(pamh, user_conf_path) < 0) {
+    /* Read the fragment once, reuse the buffer for both validation and
+     * placeholder substitution below. Eliminates a redundant fopen and
+     * closes the TOCTOU window between validate-by-path and read-by-path
+     * where an admin could have rewritten the file between checks. */
+    size_t frag_len = 0;
+    char *frag_buf = read_file(user_conf_path, &frag_len);
+    if (!frag_buf) {
+        pam_syslog(pamh, LOG_ERR,
+                   "authnft: could not read fragment %s", user_conf_path);
+        authnft_audit_fragment_reject(user, "content", user_conf_path);
+        pam_error(pamh, "authnft: fragment %s could not be read.",
+                  user_conf_path);
+        return PAM_AUTH_ERR;
+    }
+
+    /* Content validation: verb scan, include path check. */
+    if (validate_fragment_buf(pamh, user_conf_path, frag_buf, frag_len) < 0) {
+        free(frag_buf);
         authnft_audit_fragment_reject(user, "content", user_conf_path);
         pam_error(pamh, "authnft: fragment %s rejected by content validator.",
                   user_conf_path);
@@ -329,12 +433,36 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
     if (!ctx) return PAM_SERVICE_ERR;
 
     /*
-     * Call 1: infrastructure + per-session chain/sets + element.
+     * Probe the shared filter chain for the ct accept rule. nftables
+     * `add rule` is always-append; without this probe the chain would
+     * grow by one ct rule per session_open across the host's lifetime.
+     * On first session ever (chain doesn't exist) the list call fails
+     * and we fall through to including the rule in call 1, which
+     * creates the chain at the same time. On subsequent sessions the
+     * chain exists with the rule, the probe matches, and we omit it.
      *
-     * The shared filter chain and ct state rule accumulate across sessions
-     * (add rule is not idempotent). The duplicates are harmless: the first
-     * ct state rule matches and the rest are skipped. The per-session chain
-     * and sets are unique per session.
+     * The probe-then-add pattern races between concurrent open_sessions:
+     * two simultaneous probes can both see "rule absent" and both add
+     * it. The window is small and the resulting duplicates are still
+     * harmless (first rule matches, rest skipped). Net effect: chain
+     * size stays O(concurrent-burst-size) instead of O(total-sessions).
+     */
+    nft_ctx_buffer_output(ctx);
+    int probe_rc = nft_run_cmd_from_buffer(ctx,
+        "list chain inet " TABLE_NAME " filter");
+    const char *probe_out = nft_ctx_get_output_buffer(ctx);
+    int ct_rule_present = (probe_rc == 0 && probe_out &&
+        strstr(probe_out, "ct state established,related accept") != NULL);
+    nft_ctx_unbuffer_output(ctx);
+
+    const char *ct_rule_line = ct_rule_present
+        ? ""
+        : "add rule inet " TABLE_NAME " filter ct state established,related accept\n";
+
+    /*
+     * Call 1: infrastructure + per-session chain/sets + element.
+     * add table and add chain are idempotent in libnftables. The ct
+     * rule is included only when the probe above did not find it.
      */
     char *claims_tag = sd->claims_tag[0] ? sd->claims_tag : NULL;
     char tag_part[CLAIMS_TAG_MAX + 8] = "";
@@ -345,7 +473,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         result = snprintf(cmd, sizeof(cmd),
                   "add table inet %s\n"
                   "add chain inet %s filter { type filter hook input priority filter - 1; policy accept; }\n"
-                  "add rule inet %s filter ct state established,related accept\n"
+                  "%s"
                   "add chain inet %s %s\n"
                   "add set inet %s %s { typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }\n"
                   "add set inet %s %s { typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout; }\n"
@@ -353,7 +481,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
                   "add element inet %s %s { \"%s\" timeout 1d comment \"%s (PID:%d)%s\" }",
                   TABLE_NAME,
                   TABLE_NAME,
-                  TABLE_NAME,
+                  ct_rule_line,
                   TABLE_NAME, sd->chain_name,
                   TABLE_NAME, sd->set_v4,
                   TABLE_NAME, sd->set_v6,
@@ -363,7 +491,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         result = snprintf(cmd, sizeof(cmd),
                   "add table inet %s\n"
                   "add chain inet %s filter { type filter hook input priority filter - 1; policy accept; }\n"
-                  "add rule inet %s filter ct state established,related accept\n"
+                  "%s"
                   "add chain inet %s %s\n"
                   "add set inet %s %s { typeof socket cgroupv2 level 2 . ip saddr; flags timeout; }\n"
                   "add set inet %s %s { typeof socket cgroupv2 level 2 . ip6 saddr; flags timeout; }\n"
@@ -371,7 +499,7 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
                   "add element inet %s %s { \"%s\" . %s timeout 1d comment \"%s (PID:%d)%s\" }",
                   TABLE_NAME,
                   TABLE_NAME,
-                  TABLE_NAME,
+                  ct_rule_line,
                   TABLE_NAME, sd->chain_name,
                   TABLE_NAME, sd->set_v4,
                   TABLE_NAME, sd->set_v6,
@@ -417,9 +545,21 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
         return PAM_SERVICE_ERR;
     }
 
+    /* nft prints rule output as: <body> [comment "..."] # handle <id>.
+     * If a comment ever contains the substring "# handle N", strstr would
+     * find that first and sscanf would extract the wrong number. The jump
+     * rule we just added has no comment, but a future maintainer adding
+     * one (e.g., to encode scope_unit for cleanup hardening) would silently
+     * break this parser. Scan for the LAST occurrence — the real handle
+     * marker is always last on the line. See nftables rule.c:520-521 for
+     * the print order: comment, then handle. */
     const char *out = nft_ctx_get_output_buffer(ctx);
     uint64_t handle = 0;
-    const char *h = out ? strstr(out, "# handle ") : NULL;
+    const char *h = NULL;
+    if (out) {
+        for (const char *p = out, *q; (q = strstr(p, "# handle ")); p = q + 9)
+            h = q;
+    }
     if (!h || sscanf(h, "# handle %" SCNu64, &handle) != 1 || handle == 0) {
         pam_syslog(pamh, LOG_ERR,
                    "authnft: could not parse jump rule handle from nft output");
@@ -456,16 +596,11 @@ int nft_handler_setup(pam_handle_t *pamh, const char *user,
      * directly and do not receive substitution. This is documented as
      * a design choice: per-session rules use placeholders; shared
      * includes use the shared filter chain with accept-only rules.
+     *
+     * frag_buf was read once at the top of this function (just before
+     * validate_fragment_buf) and is reused here unchanged. No second
+     * file read; no TOCTOU window between validation and substitution.
      */
-    size_t frag_len = 0;
-    char *frag_buf = read_file(user_conf_path, &frag_len);
-    if (!frag_buf) {
-        pam_syslog(pamh, LOG_ERR,
-                   "authnft: could not read fragment %s", user_conf_path);
-        nft_partial_cleanup(ctx, sd);
-        nft_ctx_free(ctx);
-        return PAM_AUTH_ERR;
-    }
 
     /* Set placeholders keep the @ prefix (nft set-reference syntax).
      * Chain placeholder drops it (chain names are bare identifiers). */
