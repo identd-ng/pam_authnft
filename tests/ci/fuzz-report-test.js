@@ -227,9 +227,12 @@ async function main() {
             fuzz_username: { exit: 77, log: 'real crash', crashFiles: ['fuzz_username-crash-real'] },
             'not-a-harness': { exit: 1, log: 'forged' },
             'fuzz_username-evil': { exit: 1, log: 'forged' },
-            // A filename cannot hold a slash, but it can hold markdown, and
-            // the old code put it straight into an issue title.
-            '`**urgent: rotate your token**`': { exit: 1, log: 'forged' },
+            // Markdown in a name, which the old code put straight into an
+            // issue title. Kept to characters upload-artifact actually
+            // accepts: it rejects * " : < > | ? CR LF outright, so a plant
+            // using those fails the upload instead of reaching this job.
+            // Brackets, backticks and parens all pass, so this is reachable.
+            '`[urgent-rotate-your-token]`': { exit: 1, log: 'forged' },
         },
         [],
         ({ calls, failed: setFailed }) => {
