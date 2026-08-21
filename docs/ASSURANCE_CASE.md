@@ -120,10 +120,12 @@ gate that enforces it (inventory in
 - **Static weaknesses.** CodeQL (security-and-quality), Coverity,
   cppcheck and clang scan-build run per pull request or on schedule;
   warnings are errors in CI.
-- **Supply chain.** Actions are hash-pinned, dependencies inventoried
-  and drift-gated ([THIRD_PARTY.md](THIRD_PARTY.md)), builds checked
-  reproducible, releases ship an SBOM and SLSA Build L3 provenance,
-  and Scorecard runs weekly.
+- **Supply chain.** Actions are hash-pinned, enforced per pull
+  request by zizmor along with the rest of the workflow surface;
+  dependencies inventoried and drift-gated
+  ([THIRD_PARTY.md](THIRD_PARTY.md)), builds checked reproducible,
+  releases ship an SBOM and SLSA Build L3 provenance, and Scorecard
+  runs weekly.
 - **Adversarial review.** A July 2026 adversarial audit found no
   attacker-reachable memory-safety, injection or sandbox-escape
   defect; the caveats it raised were fixed and regression-tested

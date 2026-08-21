@@ -30,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Install clang analyzer + deps
         run: |
           sudo apt-get update
@@ -38,3 +40,26 @@ jobs:
             libnftables-dev libseccomp-dev libsystemd-dev libpam0g-dev libcap-dev libaudit-dev
       - name: scan-build (fail on any analyzer bug)
         run: make analyze
+
+  # Static analysis of the workflows themselves. CodeQL's actions pack
+  # (codeql.yml) already looks for template injection. zizmor adds the checks
+  # it does not carry: pinning policy, per-job permissions, and credentials
+  # left behind by checkout. Its online audits also compare each hash pin
+  # against the tag the version comment claims, which is how the stale
+  # codeql-action comments in this repo were found. Seconds, not minutes, so
+  # it belongs in the fast gate rather than in a workflow of its own.
+  workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # zizmor-action uploads its SARIF to the Security tab.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: zizmor
+        # Reads .github/zizmor.yml. The zizmor version and its container
+        # digest come from the pinned action commit, so the audit set only
+        # moves when dependabot bumps that pin.
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
