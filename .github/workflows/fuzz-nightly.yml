@@ -27,9 +27,10 @@ on:
         type: string
 
 permissions:
-  # contents:read for checkout; issues:write to file crash issues.
+  # contents:read for checkout, and nothing else. issues:write lives on the
+  # report job alone, so no write capability is in scope while the fuzz
+  # targets execute.
   contents: read
-  issues: write
 
 env:
   # Leak detection needs ptrace which GitHub Actions runners deny.
@@ -124,6 +125,9 @@ jobs:
           ec=$?
           set -e
           echo "exit=$ec" >> "$GITHUB_OUTPUT"
+          # The report job has no workspace and no step outputs from this
+          # matrix leg, so the exit code rides along in the artefact.
+          echo "$ec" > "tests/fuzz/crashes/${HARNESS_NAME}.exit"
           if [ "$ec" -ne 0 ]; then
             echo "::warning::${HARNESS_NAME} exited $ec — crash artefact uploaded"
             tail -200 tests/fuzz/crashes/${HARNESS_NAME}.log
@@ -171,46 +175,90 @@ jobs:
             tests/fuzz/crashes/
           retention-days: 14
 
-      - name: File crash issue
-        if: failure() && steps.fuzz.outputs.exit != '0'
+  # Reporting is a separate job so the token that can write issues is never
+  # live while the harnesses run. Fuzzing is the deliberate practice of
+  # feeding hostile input to this code looking for memory corruption; if a
+  # harness ever loses that argument, the process should not be sitting in a
+  # job holding issues:write. This job checks nothing out and reads no repo
+  # code: everything it needs travels in the artefacts the fuzz legs upload.
+  report:
+    needs: fuzz
+    if: always() && needs.fuzz.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # The only write in this workflow, on the one job that does nothing but
+      # call the issues API. contents is not granted: there is no checkout,
+      # and same-run artefact download needs no permission of its own.
+      issues: write
+
+    steps:
+      - name: Download the fuzz artefacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: '*-artefacts'
+          path: artefacts
+          # Without this, download-artifact only creates a directory per
+          # artefact when more than one matches (the path is resolvedPath when
+          # `artifacts.length === 1`), so the layout would change shape on a
+          # run where only one leg uploaded. Merged, it is always flat, and
+          # every file a leg writes is already prefixed with its harness name.
+          merge-multiple: true
+
+      - name: File crash issues
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
-            const harness = '${{ matrix.harness }}';
-            const logPath = `tests/fuzz/crashes/${harness}.log`;
-            let log = '';
-            try { log = fs.readFileSync(logPath, 'utf8').slice(-8000); }
-            catch (e) { log = '(log unavailable)'; }
+            const root = 'artefacts';
 
-            // Find the crash artefact (libFuzzer writes crash-<sha>).
-            let artefact = '(none)';
+            // Every leg's files land here together, each already named for its
+            // harness: <harness>.log, <harness>.exit, <harness>-crash-<sha>.
+            let files = [];
             try {
-              const files = fs.readdirSync('tests/fuzz/crashes')
-                .filter(f => f.startsWith(`${harness}-crash-`));
-              if (files.length) artefact = files.join(', ');
-            } catch (e) { /* ignore */ }
+              files = fs.readdirSync(root);
+            } catch (e) {
+              core.setFailed(`no artefacts to read: ${e.message}`);
+              return;
+            }
 
-            const title = `[fuzz-nightly] ${harness} crashed`;
-            const body = [
-              `**Harness:** \`${harness}\``,
-              `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              `**Crash artefact filename(s):** \`${artefact}\``,
-              ``,
-              `Crash artefacts are attached to the workflow run as`,
-              `\`${harness}-artefacts\` (14-day retention).`,
-              ``,
-              `Last 8KB of stderr/stdout:`,
-              '```',
-              log,
-              '```',
-              ``,
-              `Triage: download the artefact, save the \`crash-*\` input,`,
-              `replay locally with`,
-              `\`./tests/fuzz/out/${harness} <crash-input>\`. Add the input to`,
-              `\`tests/fuzz/corpus/${harness.replace('fuzz_', '')}/regression_*\``,
-              `once the underlying bug is fixed.`,
-            ].join('\n');
+            // Walk the fixed list, never the directory. A harness that got
+            // far enough to run attacker code can write any filename it likes
+            // under tests/fuzz/crashes, and that lands in the artefact this
+            // job reads while holding issues:write. Taking names from the
+            // matrix instead of from the artefact keeps the set of issues this
+            // can ever open bounded, which is the whole point of the split.
+            // Anything the fuzz job produces is forgeable under compromise,
+            // including $GITHUB_OUTPUT; the workflow definition is not.
+            // Keep in step with strategy.matrix.harness above:
+            // tests/ci/fuzz-report-test.js fails if the two diverge.
+            const HARNESSES = [
+              'fuzz_username',
+              'fuzz_fragment',
+              'fuzz_substitute_placeholders',
+              'fuzz_netlink_diag',
+              'fuzz_keyring_sanitize',
+              'fuzz_correlation_capture',
+              'fuzz_cgroup_path',
+              'fuzz_socket_inode',
+            ];
+
+            // .exit carries the fuzz step's exit code across the job boundary.
+            // A leg with no .exit never reached the fuzz step, so the failure
+            // was the runner or the build, not a crash. The scheduled run is
+            // red either way; filing "<harness> crashed" for it would lie.
+            const crashed = [];
+            for (const harness of HARNESSES) {
+              let ec;
+              try { ec = fs.readFileSync(`${root}/${harness}.exit`, 'utf8').trim(); }
+              catch (e) { continue; }
+              if (ec !== '0') crashed.push(harness);
+            }
+
+            if (crashed.length === 0) {
+              core.warning('fuzz failed but no harness recorded a non-zero exit; look at the run itself');
+              return;
+            }
 
             // Don't spam: if an open issue with the same title already
             // exists, just add a comment with the new run link.
@@ -221,20 +269,54 @@ jobs:
               labels: 'fuzz-crash',
               per_page: 100,
             });
-            const existing = issues.find(i => i.title === title);
-            if (existing) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                body: `Crash recurred — ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['fuzz-crash', 'bug'],
-              });
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            for (const harness of crashed) {
+              let log = '';
+              try { log = fs.readFileSync(`${root}/${harness}.log`, 'utf8').slice(-8000); }
+              catch (e) { log = '(log unavailable)'; }
+
+              // Find the crash artefact (libFuzzer writes crash-<sha>).
+              const saved = files.filter(f => f.startsWith(`${harness}-crash-`));
+              const artefact = saved.length ? saved.join(', ') : '(none)';
+
+              const title = `[fuzz-nightly] ${harness} crashed`;
+              const body = [
+                `**Harness:** \`${harness}\``,
+                `**Workflow run:** ${runUrl}`,
+                `**Crash artefact filename(s):** \`${artefact}\``,
+                ``,
+                `Crash artefacts are attached to the workflow run as`,
+                `\`${harness}-artefacts\` (14-day retention).`,
+                ``,
+                `Last 8KB of stderr/stdout:`,
+                '```',
+                log,
+                '```',
+                ``,
+                `Triage: download the artefact, save the \`crash-*\` input,`,
+                `replay locally with`,
+                `\`./tests/fuzz/out/${harness} <crash-input>\`. Add the input to`,
+                `\`tests/fuzz/corpus/${harness.replace('fuzz_', '')}/regression_*\``,
+                `once the underlying bug is fixed.`,
+              ].join('\n');
+
+              const existing = issues.find(i => i.title === title);
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body: `Crash recurred — ${runUrl}`,
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                  labels: ['fuzz-crash', 'bug'],
+                });
+              }
             }

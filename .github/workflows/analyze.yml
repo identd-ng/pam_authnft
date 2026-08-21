@@ -41,7 +41,8 @@ jobs:
       - name: scan-build (fail on any analyzer bug)
         run: make analyze
 
-  # Static analysis of the workflows themselves. CodeQL's actions pack
+  # Static analysis of the workflows themselves, plus the one piece of
+  # workflow logic that has real behaviour to test. CodeQL's actions pack
   # (codeql.yml) already looks for template injection. zizmor adds the checks
   # it does not carry: pinning policy, per-job permissions, and credentials
   # left behind by checkout. Its online audits also compare each hash pin
@@ -73,3 +74,10 @@ jobs:
         with:
           advanced-security: false
           annotations: true
+
+      # fuzz-nightly's crash reporter only runs on a night a harness crashes,
+      # which is a bad time to find out it is broken, and exercising it for
+      # real files an issue on the repo. This runs the script out of the
+      # workflow file against fixture artefacts with the API stubbed.
+      - name: The nightly crash reporter still reports
+        run: node tests/ci/fuzz-report-test.js
