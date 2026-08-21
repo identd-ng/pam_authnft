@@ -1,0 +1,22 @@
+# Configuration for zizmor, the workflow auditor run by the workflows job in
+# .github/workflows/analyze.yml.
+
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # The one action in this repo that is not hash-pinned. slsa-verifier
+        # trusts the generator only when it is called at a released tag, so
+        # pinning it to a commit would break provenance verification. The
+        # same reasoning is written out at the call site in
+        # release-provenance.yml. Any other subpath under slsa-framework/
+        # still has to be hash-pinned.
+        #
+        # ref-pin is the narrowest policy that exists: it also accepts a
+        # branch ref on this one line. zizmor has no tag-only policy and
+        # rejects an exact @ref in this map ("cannot use exact ref patterns
+        # here"), so the gap is not closeable in config. Pointing the
+        # generator at a branch would fail slsa-verifier at release time,
+        # which is the control that actually matters.
+        slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml: ref-pin
+        "*": hash-pin

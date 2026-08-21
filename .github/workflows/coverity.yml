@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -33,10 +35,11 @@ jobs:
       - name: Submit to Coverity Scan
         env:
           TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+          EMAIL: ${{ github.event.repository.owner.email || 'noreply@github.com' }}
         run: |
           tar czf cov-int.tgz cov-int
           curl --form token=$TOKEN \
-            --form email=${{ github.event.repository.owner.email || 'noreply@github.com' }} \
+            --form email="$EMAIL" \
             --form file=@cov-int.tgz \
             --form version=$GITHUB_SHA \
             --form description="GH Actions $GITHUB_SHA" \
