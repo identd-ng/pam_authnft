@@ -40,10 +40,33 @@ function extractScript() {
     return body.join('\n');
 }
 
+// The harness names the fuzz job actually runs, read from strategy.matrix so
+// the whitelist inside the reporting script can be pinned against them.
+function extractMatrixHarnesses() {
+    const lines = fs.readFileSync(workflow, 'utf8').split('\n');
+    const start = lines.findIndex(l => l.trim() === 'harness:');
+    if (start === -1) throw new Error('no matrix harness list in ' + workflow);
+    const names = [];
+    for (let i = start + 1; i < lines.length; i++) {
+        const m = lines[i].match(/^\s+- (\S+)\s*$/);
+        if (!m) break;
+        names.push(m[1]);
+    }
+    return names;
+}
+
+// The whitelist the reporting script walks.
+function extractScriptHarnesses(body) {
+    const m = body.match(/const HARNESSES = \[([^\]]*)\]/);
+    if (!m) throw new Error('no HARNESSES list in the reporting script');
+    return [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]);
+}
+
 // actions/github-script compiles the body into an async function with these
 // names in scope. Match that exactly.
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const script = new AsyncFunction('github', 'context', 'core', 'require', extractScript());
+const scriptBody = extractScript();
+const script = new AsyncFunction('github', 'context', 'core', 'require', scriptBody);
 
 function makeStubs(openIssues) {
     const state = { calls: [], logs: [], failed: null };
@@ -186,6 +209,35 @@ async function main() {
             check('the step does not fail', setFailed === null, setFailed);
             check('one issue filed', calls.length === 1, JSON.stringify(calls.map(c => c.title)));
             check('the crash file is found', calls[0].body.includes('fuzz_username-crash-abc'));
+        });
+
+    console.log('\n[CASE] the reporter\'s whitelist matches the matrix it reports on');
+    {
+        const matrix = extractMatrixHarnesses();
+        const allowed = extractScriptHarnesses(scriptBody);
+        check('the matrix is not empty', matrix.length > 0, JSON.stringify(matrix));
+        check('every harness the matrix runs can be reported',
+            JSON.stringify([...matrix].sort()) === JSON.stringify([...allowed].sort()),
+            `matrix=${JSON.stringify(matrix)} whitelist=${JSON.stringify(allowed)}`);
+    }
+
+    await scenario(
+        'a compromised harness plants markers for names it invented',
+        {
+            fuzz_username: { exit: 77, log: 'real crash', crashFiles: ['fuzz_username-crash-real'] },
+            'not-a-harness': { exit: 1, log: 'forged' },
+            'fuzz_username-evil': { exit: 1, log: 'forged' },
+            // A filename cannot hold a slash, but it can hold markdown, and
+            // the old code put it straight into an issue title.
+            '`**urgent: rotate your token**`': { exit: 1, log: 'forged' },
+        },
+        [],
+        ({ calls, failed: setFailed }) => {
+            check('the step does not fail', setFailed === null, setFailed);
+            check('only the real harness is reported', calls.length === 1,
+                JSON.stringify(calls.map(c => c.title)));
+            check('the title comes from the matrix, not the artefact',
+                calls[0].title === '[fuzz-nightly] fuzz_username crashed', calls[0].title);
         });
 
     await scenario(

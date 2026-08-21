@@ -222,16 +222,35 @@ jobs:
               return;
             }
 
+            // Walk the fixed list, never the directory. A harness that got
+            // far enough to run attacker code can write any filename it likes
+            // under tests/fuzz/crashes, and that lands in the artefact this
+            // job reads while holding issues:write. Taking names from the
+            // matrix instead of from the artefact keeps the set of issues this
+            // can ever open bounded, which is the whole point of the split.
+            // Anything the fuzz job produces is forgeable under compromise,
+            // including $GITHUB_OUTPUT; the workflow definition is not.
+            // Keep in step with strategy.matrix.harness above:
+            // tests/ci/fuzz-report-test.js fails if the two diverge.
+            const HARNESSES = [
+              'fuzz_username',
+              'fuzz_fragment',
+              'fuzz_substitute_placeholders',
+              'fuzz_netlink_diag',
+              'fuzz_keyring_sanitize',
+              'fuzz_correlation_capture',
+              'fuzz_cgroup_path',
+              'fuzz_socket_inode',
+            ];
+
             // .exit carries the fuzz step's exit code across the job boundary.
             // A leg with no .exit never reached the fuzz step, so the failure
             // was the runner or the build, not a crash. The scheduled run is
             // red either way; filing "<harness> crashed" for it would lie.
             const crashed = [];
-            for (const f of files) {
-              if (!f.endsWith('.exit')) continue;
-              const harness = f.slice(0, -'.exit'.length);
+            for (const harness of HARNESSES) {
               let ec;
-              try { ec = fs.readFileSync(`${root}/${f}`, 'utf8').trim(); }
+              try { ec = fs.readFileSync(`${root}/${harness}.exit`, 'utf8').trim(); }
               catch (e) { continue; }
               if (ec !== '0') crashed.push(harness);
             }
